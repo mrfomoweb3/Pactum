@@ -19,6 +19,19 @@ Copy `.env.example` to `.env.local` and set `VITE_NIMIQ_PAYOUT_ADDRESS` to the p
 
 The app never requests keys or seed phrases. Client-reported payment success is not sufficient for production. See `docs/FEASIBILITY.md` for the exact unverified integration boundary.
 
+## Cloudflare API
+
+The Worker in `worker/` exposes the first production-shaped backend slice:
+
+- `GET /api/v1/health`
+- `GET /api/v1/p/:publicId`
+- `POST /api/v1/p/:publicId/payment-intents`
+- `POST /api/v1/p/:publicId/payments/verify`
+
+It persists intents in D1 and independently verifies submitted hashes against Nimiq mainnet JSON-RPC before marking the bond secured.
+
+Production API: `https://pactum-api.samuelsuccess234.workers.dev/api/v1`
+
 ## License
 
 MIT

@@ -10,5 +10,9 @@ This file records commands actually run. It must not be treated as a Nimiq Pay d
 | `npm run typecheck` | Passed |
 | `npm run test` | Passed — 1 test |
 | `npm run build` | Passed — Vite production bundle generated |
+| `npm run worker:check` | Passed — Cloudflare Worker dry run |
+| `npm run worker:deploy` | Passed — Worker version `f8ed8a03-9325-4abc-9a5b-55e1274d7c86` |
+| Live `GET /api/v1/health` | Passed — D1 available, Nimiq mainnet RPC reachable |
+| Live `GET /api/v1/p/ca-8f47-aurea` | Passed — correct amount and payout address |
 
 Nimiq Pay device testing, a real small-value transaction, and independent backend transaction verification were not run in this environment. See `FEASIBILITY.md`.
