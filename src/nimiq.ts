@@ -6,6 +6,21 @@ function isErrorResponse(value: unknown): value is ErrorResponse {
   return typeof value === 'object' && value !== null && 'error' in value
 }
 
+export function walletErrorMessage(value: unknown, fallback: string): string {
+  if (value instanceof Error && value.message) return value.message
+  if (typeof value === 'string' && value.trim()) return value
+  if (typeof value === 'object' && value !== null) {
+    const candidate = value as { message?: unknown; error?: { message?: unknown; type?: unknown } | string }
+    if (typeof candidate.message === 'string' && candidate.message.trim()) return candidate.message
+    if (typeof candidate.error === 'string' && candidate.error.trim()) return candidate.error
+    if (typeof candidate.error === 'object' && candidate.error) {
+      if (typeof candidate.error.message === 'string' && candidate.error.message.trim()) return candidate.error.message
+      if (typeof candidate.error.type === 'string' && candidate.error.type.trim()) return candidate.error.type
+    }
+  }
+  return fallback
+}
+
 export async function connectNimiq(): Promise<WalletState> {
   const provider = await init()
   const accounts = await provider.listAccounts()

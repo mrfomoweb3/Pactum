@@ -4,7 +4,7 @@ import {
   ArrowLeft, ArrowRight, Check, CheckCircle, Copy, LockKey,
   QrCode, ShieldCheck, Sparkle, UserCircle, Wallet, X,
 } from '@phosphor-icons/react'
-import { connectNimiq, payBond } from './nimiq'
+import { connectNimiq, payBond, walletErrorMessage } from './nimiq'
 import { createPaymentIntent, verifyPayment, type PaymentIntent } from './api'
 
 const demo = {
@@ -115,7 +115,7 @@ function MiniApp() {
       setWallet(account.address); setIntent(paymentIntent); setStep('confirm')
     } catch (caught) {
       setStep('review')
-      setError(caught instanceof Error ? caught.message : 'Open this reservation inside Nimiq Pay to connect a wallet and pay.')
+      setError(walletErrorMessage(caught, 'Open this reservation inside Nimiq Pay to connect a wallet and pay.'))
     }
   }
 
@@ -141,7 +141,7 @@ function MiniApp() {
       setStep('secured')
     } catch (caught) {
       setStep('confirm')
-      setError(caught instanceof Error ? caught.message : 'The payment was not approved. Nothing changed and no reservation pass was issued.')
+      setError(walletErrorMessage(caught, 'Nimiq Pay could not complete the payment. No reservation pass was issued.'))
     }
   }
 
