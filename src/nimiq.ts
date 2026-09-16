@@ -7,18 +7,31 @@ function isErrorResponse(value: unknown): value is ErrorResponse {
 }
 
 export function walletErrorMessage(value: unknown, fallback: string): string {
-  if (value instanceof Error && value.message) return value.message
-  if (typeof value === 'string' && value.trim()) return value
+  let message = ''
+  if (value instanceof Error && value.message) message = value.message
+  else if (typeof value === 'string' && value.trim()) message = value
   if (typeof value === 'object' && value !== null) {
     const candidate = value as { message?: unknown; error?: { message?: unknown; type?: unknown } | string }
-    if (typeof candidate.message === 'string' && candidate.message.trim()) return candidate.message
-    if (typeof candidate.error === 'string' && candidate.error.trim()) return candidate.error
+    if (typeof candidate.message === 'string' && candidate.message.trim()) message = candidate.message
+    if (typeof candidate.error === 'string' && candidate.error.trim()) message = candidate.error
     if (typeof candidate.error === 'object' && candidate.error) {
-      if (typeof candidate.error.message === 'string' && candidate.error.message.trim()) return candidate.error.message
-      if (typeof candidate.error.type === 'string' && candidate.error.type.trim()) return candidate.error.type
+      if (typeof candidate.error.message === 'string' && candidate.error.message.trim()) message = candidate.error.message
+      else if (typeof candidate.error.type === 'string' && candidate.error.type.trim()) message = candidate.error.type
     }
   }
-  return fallback
+  if (/syncing your account/i.test(message)) {
+    return 'Nimiq Pay could not sync this account. Return to the Wallet screen, wait until the balance finishes loading, then reopen Pactum and retry.'
+  }
+  return message || fallback
+}
+
+export async function ensureNimiqReady(): Promise<number> {
+  const provider = await init()
+  const ready = await provider.isConsensusEstablished()
+  if (!ready) {
+    throw new Error('Nimiq Pay is still connecting to the network. Return to the Wallet screen, wait until the balance loads, then retry.')
+  }
+  return provider.getBlockNumber()
 }
 
 export async function connectNimiq(): Promise<WalletState> {

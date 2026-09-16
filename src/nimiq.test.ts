@@ -17,4 +17,9 @@ describe('wallet error messages', () => {
   it('reads top-level provider messages', () => {
     expect(walletErrorMessage({ message: 'User rejected' }, 'Fallback')).toBe('User rejected')
   })
+
+  it('turns account sync failures into recovery instructions', () => {
+    expect(walletErrorMessage({ error: { message: 'Something went wrong syncing your account' } }, 'Fallback'))
+      .toContain('wait until the balance finishes loading')
+  })
 })

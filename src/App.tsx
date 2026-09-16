@@ -4,7 +4,7 @@ import {
   ArrowLeft, ArrowRight, Check, CheckCircle, Copy, LockKey,
   QrCode, ShieldCheck, Sparkle, UserCircle, Wallet, X,
 } from '@phosphor-icons/react'
-import { connectNimiq, payBond, walletErrorMessage } from './nimiq'
+import { connectNimiq, ensureNimiqReady, payBond, walletErrorMessage } from './nimiq'
 import { createPaymentIntent, verifyPayment, type PaymentIntent } from './api'
 
 const demo = {
@@ -129,6 +129,7 @@ function MiniApp() {
         setStep('secured')
         return
       }
+      await ensureNimiqReady()
       const hash = await payBond({ recipient: intent.recipient, amountLuna: intent.amountLuna, dataReference: intent.dataReference })
       setTxHash(hash)
       let verified = false
