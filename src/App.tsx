@@ -5,6 +5,7 @@ import {
   QrCode, ShieldCheck, Sparkle, UserCircle, Wallet, X,
 } from '@phosphor-icons/react'
 import { connectNimiq, payBond } from './nimiq'
+import { createPaymentIntent, verifyPayment, type PaymentIntent } from './api'
 
 const demo = {
   publicId: 'ca-8f47-aurea',
@@ -12,8 +13,8 @@ const demo = {
   date: 'Friday, 18 September',
   time: '8:00 PM',
   party: 4,
-  nim: '12.50',
-  luna: 1_250_000,
+  nim: '0.01',
+  luna: 1_000,
   address: import.meta.env.VITE_NIMIQ_PAYOUT_ADDRESS || 'NQ77 8CXK 0PR4 7T9N LSBM L861 UVNU 2UKY D1U6',
   policy: 'Cancel before 8:00 PM on the preceding day for a full bond refund. After that time, the restaurant may retain the bond.',
 }
@@ -100,6 +101,7 @@ function MiniApp() {
   const [wallet, setWallet] = useState('')
   const [error, setError] = useState('')
   const [txHash, setTxHash] = useState('')
+  const [intent, setIntent] = useState<PaymentIntent | null>(null)
   const [sheetOpen, setSheetOpen] = useState(false)
   const navigate = useNavigate()
 
@@ -109,21 +111,37 @@ function MiniApp() {
     setError(''); setStep('wallet')
     try {
       const account = await connectNimiq()
-      setWallet(account.address); setStep('confirm')
-    } catch {
+      const paymentIntent = await createPaymentIntent(demo.publicId, account.address)
+      setWallet(account.address); setIntent(paymentIntent); setStep('confirm')
+    } catch (caught) {
       setStep('review')
-      setError('Open this reservation inside Nimiq Pay to connect a wallet and pay. You can still review every detail here.')
+      setError(caught instanceof Error ? caught.message : 'Open this reservation inside Nimiq Pay to connect a wallet and pay.')
     }
   }
 
   async function pay() {
     setError(''); setStep('pending')
     try {
-      const hash = await payBond(demo.address, demo.luna, demo.publicId)
-      setTxHash(hash); setStep('secured')
-    } catch {
+      if (!intent) throw new Error('The payment request expired. Connect your wallet again.')
+      if (txHash) {
+        const verified = await verifyPayment(demo.publicId, intent.id, txHash)
+        if (!verified) throw new Error('Payment detected and still confirming. Do not pay again; check its status shortly.')
+        setStep('secured')
+        return
+      }
+      const hash = await payBond({ recipient: intent.recipient, amountLuna: intent.amountLuna, dataReference: intent.dataReference })
+      setTxHash(hash)
+      let verified = false
+      for (const delay of [0, 1500, 3000, 5000]) {
+        if (delay) await new Promise((resolve) => setTimeout(resolve, delay))
+        verified = await verifyPayment(demo.publicId, intent.id, hash)
+        if (verified) break
+      }
+      if (!verified) throw new Error('Payment detected and still confirming. Do not pay again; check its status shortly.')
+      setStep('secured')
+    } catch (caught) {
       setStep('confirm')
-      setError('The payment was not approved. Nothing changed and no reservation pass was issued.')
+      setError(caught instanceof Error ? caught.message : 'The payment was not approved. Nothing changed and no reservation pass was issued.')
     }
   }
 
@@ -145,7 +163,7 @@ function MiniApp() {
         <div className="app-action">
           {step === 'review' && <button disabled={!accepted} className="button button--app" onClick={connect}>Secure this table <ArrowRight weight="bold"/></button>}
           {step === 'wallet' && <button disabled className="button button--app">Waiting for Nimiq Pay…</button>}
-          {step === 'confirm' && <button className="button button--app" onClick={pay}>Confirm {demo.nim} NIM <ArrowRight weight="bold"/></button>}
+          {step === 'confirm' && <button className="button button--app" onClick={pay}>{txHash ? 'Check payment status' : `Confirm ${demo.nim} NIM`} <ArrowRight weight="bold"/></button>}
           {step === 'pending' && <button disabled className="button button--app">Confirming payment…</button>}
           <p><LockKey weight="fill"/> Confirmed securely in Nimiq Pay</p>
         </div>

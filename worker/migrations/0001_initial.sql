@@ -39,6 +39,6 @@ INSERT OR IGNORE INTO bonds (
   status, created_at, updated_at
 ) VALUES (
   'bond_demo_casa_aurea', 'ca-8f47-aurea', 'Casa Aurea',
-  'NQ77 8CXK 0PR4 7T9N LSBM L861 UVNU 2UKY D1U6', 1250000,
+  'NQ77 8CXK 0PR4 7T9N LSBM L861 UVNU 2UKY D1U6', 1000,
   'OPEN', datetime('now'), datetime('now')
 );

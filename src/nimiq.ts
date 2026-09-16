@@ -14,12 +14,14 @@ export async function connectNimiq(): Promise<WalletState> {
   return { address: accounts[0], connected: true }
 }
 
-export async function payBond(recipient: string, amountLuna: number, publicId: string) {
+export type PaymentRequest = { recipient: string; amountLuna: number; dataReference: string }
+
+export async function payBond(request: PaymentRequest) {
   const provider = await init()
   const result = await provider.sendBasicTransactionWithData({
-    recipient,
-    value: amountLuna,
-    data: `PACTUM:${publicId}:v1`,
+    recipient: request.recipient,
+    value: request.amountLuna,
+    data: request.dataReference,
   })
   if (isErrorResponse(result)) throw new Error(result.error.message)
   return result

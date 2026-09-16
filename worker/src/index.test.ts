@@ -5,7 +5,7 @@ const intent = {
   id: 'intent_1234567890', bond_id: 'bond_1',
   payer_address: 'NQ02 31N6 3KM5 T6G5 22TN EPF5 5XPY RLHK RMB3',
   recipient_address: 'NQ77 8CXK 0PR4 7T9N LSBM L861 UVNU 2UKY D1U6',
-  amount_luna: 1_250_000, data_reference: 'PACTUM:ca-8f47-aurea:v1',
+  amount_luna: 1_000, data_reference: 'PACTUM:ca-8f47-aurea:v1',
   network_id: 24, expires_at: new Date(Date.now() + 60_000).toISOString(), consumed_at: null,
 }
 
