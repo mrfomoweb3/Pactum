@@ -14,7 +14,7 @@ const demo = {
   party: 4,
   nim: '12.50',
   luna: 1_250_000,
-  address: 'NQ57 5R7E 6HCX E8DP 38N9 XHYQ 4HB3 1V5G YP2Q',
+  address: import.meta.env.VITE_NIMIQ_PAYOUT_ADDRESS || 'NQ77 8CXK 0PR4 7T9N LSBM L861 UVNU 2UKY D1U6',
   policy: 'Cancel before 8:00 PM on the preceding day for a full bond refund. After that time, the restaurant may retain the bond.',
 }
 

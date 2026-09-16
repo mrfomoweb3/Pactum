@@ -22,7 +22,7 @@ No controlled Nimiq Pay wallet or payout address was available in this coding en
 
 ## Required next run
 
-1. Replace the demo payout address with a controlled valid Nimiq address.
+1. Confirmed controlled payout address configured: `NQ77 8CXK 0PR4 7T9N LSBM L861 UVNU 2UKY D1U6`.
 2. Open the local HTTPS URL inside Nimiq Pay.
 3. Request the active account and sign a deterministic Pactum message.
 4. Send a deliberately small NIM transaction with `PACTUM:SPIKE:v1`.
