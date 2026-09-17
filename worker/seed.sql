@@ -1,0 +1,3 @@
+-- REHEARSAL DATA ONLY. This row never represents a live payment.
+INSERT OR IGNORE INTO bonds (id, public_id, restaurant_name, payout_address, amount_luna, status, created_at, updated_at, reservation_at, restaurant_timezone, party_size, policy_text, cancellation_deadline, external_reference, pass_version)
+VALUES ('bond_rehearsal_casa_aurea', 'rehearsal-casa-aurea', 'Casa Aurea', 'NQ77 8CXK 0PR4 7T9N LSBM L861 UVNU 2UKY D1U6', 1000, 'OPEN', datetime('now'), datetime('now'), datetime('now', '+7 day'), 'Africa/Lagos', 4, 'Cancel before 8:00 PM on the preceding day for a full bond refund. After that time, the restaurant may retain the bond.', datetime('now', '+6 day'), 'REHEARSAL-NOT-LIVE', 1);

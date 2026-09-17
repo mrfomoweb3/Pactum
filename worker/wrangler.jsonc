@@ -8,7 +8,7 @@
     "ENVIRONMENT": "production",
     "NIMIQ_RPC_URL": "https://rpc.nimiqwatch.com",
     "NIMIQ_NETWORK_ID": "24",
-    "ALLOWED_ORIGINS": "*"
+    "ALLOWED_ORIGINS": "https://pactum-delta.vercel.app,http://localhost:5173"
   },
   "d1_databases": [
     {

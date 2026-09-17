@@ -26,6 +26,7 @@ type Bond = {
   external_reference: string | null
   service_status: 'CHECKED_IN' | 'APPLIED' | 'REFUND_PENDING' | 'REFUNDED' | null
   refund_tx_hash: string | null
+  terminal_status: 'CANCELLED' | 'FORFEITED' | 'EXPIRED' | null
 }
 
 type Profile = {
@@ -173,6 +174,24 @@ async function authenticatedProfile(request: Request, env: Env): Promise<Profile
     .bind(tokenHash, new Date().toISOString()).first<Profile>()
 }
 
+async function staffAccess(env: Env, profile: Profile | null, bond: Bond, requireRefund = false): Promise<boolean> {
+  if (!profile || !bond.restaurant_profile_id) return false
+  if (profile.role === 'RESTAURANT' && profile.id === bond.restaurant_profile_id) return true
+  const member = await env.DB.prepare(`SELECT can_refund FROM staff_members WHERE restaurant_profile_id = ? AND wallet_address = ? AND revoked_at IS NULL`)
+    .bind(bond.restaurant_profile_id, profile.wallet_address).first<{ can_refund: number }>()
+  return Boolean(member && (!requireRefund || member.can_refund === 1))
+}
+
+async function rateLimited(request: Request, env: Env, scope: string, limit: number): Promise<boolean> {
+  const ip = request.headers.get('cf-connecting-ip') || 'unknown'
+  const bucket = `${scope}:${ip}`
+  const now = new Date(); const reset = new Date(now.getTime() + 60_000).toISOString()
+  const row = await env.DB.prepare('SELECT count, reset_at FROM rate_limits WHERE bucket = ?').bind(bucket).first<{ count: number; reset_at: string }>()
+  if (!row || row.reset_at <= now.toISOString()) { await env.DB.prepare('INSERT OR REPLACE INTO rate_limits (bucket, count, reset_at) VALUES (?, 1, ?)').bind(bucket, reset).run(); return false }
+  if (row.count >= limit) return true
+  await env.DB.prepare('UPDATE rate_limits SET count = count + 1 WHERE bucket = ?').bind(bucket).run(); return false
+}
+
 export function verifyTransaction(tx: NimiqTransaction, intent: PaymentIntent): string[] {
   const failures: string[] = []
   if (!tx.hash) failures.push('missing_hash')
@@ -227,6 +246,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   }
 
   if (request.method === 'POST' && path === '/api/v1/auth/nonce') {
+    if (await rateLimited(request, env, 'auth-nonce', 12)) return fail(request, env, 429, 'RATE_LIMITED', 'Too many wallet requests. Try again in one minute.')
     const body = await boundedJson<{ walletAddress?: string; role?: string }>(request)
     const walletAddress = normalizedAddress(body.walletAddress || '')
     const role = body.role === 'RESTAURANT' ? 'RESTAURANT' : body.role === 'GUEST' ? 'GUEST' : null
@@ -319,7 +339,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (restaurantBonds && request.method === 'GET') {
     const profile = await authenticatedProfile(request, env)
     if (!profile || profile.role !== 'RESTAURANT' || profile.id !== restaurantBonds[1]) return fail(request, env, 403, 'RESTAURANT_AUTH_REQUIRED', 'This restaurant profile is required.')
-    const bonds = await env.DB.prepare(`SELECT id, public_id, reservation_at, party_size, amount_luna, status, service_status
+    const bonds = await env.DB.prepare(`SELECT id, public_id, reservation_at, party_size, amount_luna, status, service_status, terminal_status
       FROM bonds WHERE restaurant_profile_id = ? ORDER BY reservation_at ASC LIMIT 100`).bind(profile.id).all()
     return json(request, env, { bonds: bonds.results })
   }
@@ -341,11 +361,13 @@ async function route(request: Request, env: Env): Promise<Response> {
       policyText: bond.policy_text,
       cancellationDeadline: bond.cancellation_deadline,
       serviceStatus: bond.service_status,
+      terminalStatus: bond.terminal_status,
     })
   }
 
   const createIntent = path.match(/^\/api\/v1\/p\/([a-zA-Z0-9-]+)\/payment-intents$/)
   if (request.method === 'POST' && createIntent) {
+    if (await rateLimited(request, env, 'payment-intent', 10)) return fail(request, env, 429, 'RATE_LIMITED', 'Too many payment attempts. Try again shortly.')
     const idempotencyKey = request.headers.get('idempotency-key')
     if (!idempotencyKey || idempotencyKey.length < 16 || idempotencyKey.length > 128) {
       return fail(request, env, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'A valid Idempotency-Key header is required.')
@@ -355,6 +377,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (!NIMIQ_ADDRESS_RE.test(payerAddress)) return fail(request, env, 400, 'INVALID_PAYER', 'A valid Nimiq payer address is required.')
     const bond = await getBond(env, createIntent[1])
     if (!bond) return fail(request, env, 404, 'BOND_NOT_FOUND', 'Reservation bond not found.')
+    if (bond.terminal_status) return fail(request, env, 409, 'BOND_CLOSED', 'This reservation bond is closed.')
     if (bond.status === 'SECURED') return fail(request, env, 409, 'BOND_ALREADY_SECURED', 'This reservation is already secured.')
 
     const existing = await env.DB.prepare('SELECT * FROM payment_intents WHERE id = ?').bind(idempotencyKey).first<PaymentIntent>()
@@ -470,7 +493,8 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (request.method === 'POST' && staffAction) {
     const profile = await authenticatedProfile(request, env)
     const bond = await getBond(env, staffAction[1])
-    if (!profile || profile.role !== 'RESTAURANT' || !bond || bond.restaurant_profile_id !== profile.id) return fail(request, env, 403, 'STAFF_AUTH_REQUIRED', 'This restaurant wallet cannot update the reservation.')
+    if (!bond || !await staffAccess(env, profile, bond)) return fail(request, env, 403, 'STAFF_AUTH_REQUIRED', 'This wallet is not approved for this restaurant.')
+    if (bond.terminal_status) return fail(request, env, 409, 'BOND_CLOSED', 'This reservation is closed.')
     const target = staffAction[2] === 'check-in' ? 'CHECKED_IN' : 'APPLIED'
     const expected = staffAction[2] === 'check-in' ? null : 'CHECKED_IN'
     if (bond.status !== 'SECURED' || bond.service_status === target) return bond.service_status === target
@@ -492,7 +516,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (request.method === 'GET' && bondEvents) {
     const profile = await authenticatedProfile(request, env)
     const bond = await getBond(env, bondEvents[1])
-    if (!profile || profile.role !== 'RESTAURANT' || !bond || bond.restaurant_profile_id !== profile.id) return fail(request, env, 403, 'STAFF_AUTH_REQUIRED', 'This restaurant cannot view the audit timeline.')
+    if (!bond || !await staffAccess(env, profile, bond)) return fail(request, env, 403, 'STAFF_AUTH_REQUIRED', 'This wallet is not approved for this restaurant.')
     const events = await env.DB.prepare('SELECT event_type, from_status, to_status, metadata, created_at FROM bond_events WHERE bond_id = ? ORDER BY created_at ASC').bind(bond.id).all()
     return json(request, env, { events: events.results })
   }
@@ -538,7 +562,7 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (request.method === 'POST' && refundIntent) {
     const profile = await authenticatedProfile(request, env)
     const bond = await getBond(env, refundIntent[1])
-    if (!profile || profile.role !== 'RESTAURANT' || !bond || bond.restaurant_profile_id !== profile.id) return fail(request, env, 403, 'OWNER_AUTH_REQUIRED', 'The restaurant owner wallet is required.')
+    if (!bond || !await staffAccess(env, profile, bond, true)) return fail(request, env, 403, 'OWNER_AUTH_REQUIRED', 'Refund permission is required.')
     if (bond.status !== 'SECURED' || !bond.payer_address || bond.service_status === 'APPLIED' || bond.service_status === 'REFUNDED') return fail(request, env, 409, 'BOND_NOT_REFUNDABLE', 'This bond cannot be refunded from its current state.')
     const id = crypto.randomUUID(); const now = new Date(); const expiresAt = new Date(now.getTime() + 10 * 60 * 1000).toISOString(); const dataReference = `PACTUM:REFUND:${bond.public_id}:v1`
     await env.DB.prepare(`INSERT INTO refund_intents (id, bond_id, sender_address, recipient_address, amount_luna, data_reference, network_id, expires_at, created_at)
@@ -551,7 +575,7 @@ async function route(request: Request, env: Env): Promise<Response> {
     const profile = await authenticatedProfile(request, env)
     const bond = await getBond(env, verifyRefund[1])
     const body = await boundedJson<{ intentId?: string; txHash?: string }>(request)
-    if (!profile || profile.role !== 'RESTAURANT' || !bond || bond.restaurant_profile_id !== profile.id) return fail(request, env, 403, 'OWNER_AUTH_REQUIRED', 'The restaurant owner wallet is required.')
+    if (!bond || !await staffAccess(env, profile, bond, true)) return fail(request, env, 403, 'OWNER_AUTH_REQUIRED', 'Refund permission is required.')
     if (!body.intentId || !body.txHash || !HASH_RE.test(body.txHash)) return fail(request, env, 400, 'INVALID_REFUND_PROOF', 'A valid refund intent and transaction hash are required.')
     const intent = await env.DB.prepare('SELECT * FROM refund_intents WHERE id = ? AND bond_id = ?').bind(body.intentId, bond.id).first<{ id: string; bond_id: string; sender_address: string; recipient_address: string; amount_luna: number; data_reference: string; network_id: number; expires_at: string; consumed_at: string | null; created_at: string }>()
     if (!intent || intent.consumed_at) return fail(request, env, 409, 'REFUND_INTENT_INVALID', 'This refund request is invalid or already used.')
@@ -573,6 +597,42 @@ async function route(request: Request, env: Env): Promise<Response> {
     ])
     if (!results[0].meta.changes) return fail(request, env, 409, 'CONCURRENT_UPDATE', 'The reservation changed before this refund completed.')
     return json(request, env, { publicId: bond.public_id, serviceStatus: 'REFUNDED', txHash: refundHash })
+  }
+
+  const staffMembers = path.match(/^\/api\/v1\/restaurants\/([a-f0-9-]+)\/staff(?:\/([a-f0-9-]+))?$/)
+  if (staffMembers) {
+    const profile = await authenticatedProfile(request, env)
+    if (!profile || profile.role !== 'RESTAURANT' || profile.id !== staffMembers[1]) return fail(request, env, 403, 'OWNER_AUTH_REQUIRED', 'The restaurant owner wallet is required.')
+    if (request.method === 'GET') {
+      const members = await env.DB.prepare('SELECT id, wallet_address, can_refund, revoked_at, created_at FROM staff_members WHERE restaurant_profile_id = ? ORDER BY created_at DESC').bind(profile.id).all()
+      return json(request, env, { members: members.results })
+    }
+    if (request.method === 'POST' && !staffMembers[2]) {
+      const body = await boundedJson<{ walletAddress?: string; canRefund?: boolean }>(request); const wallet = normalizedAddress(body.walletAddress || '')
+      if (!NIMIQ_ADDRESS_RE.test(wallet) || wallet === normalizedAddress(profile.wallet_address)) return fail(request, env, 400, 'INVALID_STAFF_WALLET', 'Enter a different valid Nimiq wallet.')
+      const id = crypto.randomUUID(); const now = new Date().toISOString()
+      await env.DB.prepare(`INSERT INTO staff_members (id, restaurant_profile_id, wallet_address, can_refund, created_at) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(restaurant_profile_id, wallet_address) DO UPDATE SET can_refund = excluded.can_refund, revoked_at = NULL`).bind(id, profile.id, wallet, body.canRefund ? 1 : 0, now).run()
+      return json(request, env, { id, walletAddress: wallet, canRefund: Boolean(body.canRefund) }, 201)
+    }
+    if (request.method === 'POST' && staffMembers[2]) {
+      await env.DB.prepare('UPDATE staff_members SET revoked_at = ? WHERE id = ? AND restaurant_profile_id = ?').bind(new Date().toISOString(), staffMembers[2], profile.id).run()
+      return json(request, env, { revoked: true })
+    }
+  }
+
+  const terminalAction = path.match(/^\/api\/v1\/staff\/bonds\/([a-zA-Z0-9-]+)\/(cancel|forfeit|expire)$/)
+  if (request.method === 'POST' && terminalAction) {
+    const profile = await authenticatedProfile(request, env); const bond = await getBond(env, terminalAction[1])
+    if (!profile || profile.role !== 'RESTAURANT' || !bond || bond.restaurant_profile_id !== profile.id) return fail(request, env, 403, 'OWNER_AUTH_REQUIRED', 'The restaurant owner wallet is required.')
+    const target = terminalAction[2] === 'cancel' ? 'CANCELLED' : terminalAction[2] === 'forfeit' ? 'FORFEITED' : 'EXPIRED'
+    if (bond.terminal_status || bond.service_status) return fail(request, env, 409, 'INVALID_TRANSITION', 'This reservation can no longer be closed this way.')
+    if (target === 'FORFEITED' && bond.status !== 'SECURED') return fail(request, env, 409, 'INVALID_TRANSITION', 'Only a secured reservation can be forfeited.')
+    if (target === 'EXPIRED' && (bond.status === 'SECURED' || !bond.reservation_at || Date.parse(bond.reservation_at) > Date.now())) return fail(request, env, 409, 'INVALID_TRANSITION', 'Only an overdue unpaid reservation can expire.')
+    const now = new Date().toISOString(); const result = await env.DB.prepare('UPDATE bonds SET terminal_status = ?, pass_version = pass_version + 1, updated_at = ? WHERE id = ? AND terminal_status IS NULL AND service_status IS NULL').bind(target, now, bond.id).run()
+    if (!result.meta.changes) return fail(request, env, 409, 'CONCURRENT_UPDATE', 'The reservation changed first.')
+    await env.DB.prepare('INSERT INTO bond_events (id, bond_id, event_type, from_status, to_status, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').bind(crypto.randomUUID(), bond.id, target, bond.status, target, '{}', now).run()
+    return json(request, env, { publicId: bond.public_id, terminalStatus: target })
   }
 
   return fail(request, env, 404, 'NOT_FOUND', 'Endpoint not found.')

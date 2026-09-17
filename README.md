@@ -2,7 +2,7 @@
 
 Pactum is a transferable reservation bond for fine dining: a restaurant creates a bond, a guest pays it directly in NIM, and the verified holder receives a reservation pass.
 
-This repository currently contains the public product landing page and the mobile-first Nimiq Pay guest payment surface. Real provider calls are implemented. Independent server verification and the restaurant/staff surfaces remain release-blocking work.
+The MVP includes restaurant and guest onboarding, bond creation, real NIM payment, independent verification, wallet-signed transfer, restaurant-scoped staff access, QR validation, check-in, apply-to-bill, refund, cancellation, forfeiture, and an audit timeline.
 
 ## Local setup
 
@@ -17,20 +17,21 @@ Copy `.env.example` to `.env.local` and set `VITE_NIMIQ_PAYOUT_ADDRESS` to the p
 
 ## Security status
 
-The app never requests keys or seed phrases. Client-reported payment success is not sufficient for production. See `docs/FEASIBILITY.md` for the exact unverified integration boundary.
+The app never requests keys or seed phrases. Client-reported payment success is never sufficient: the Worker independently verifies payment before issuing a pass. See `docs/FEASIBILITY.md` and `docs/VERIFICATION.md` for evidence and the remaining device-test boundary.
 
 ## Cloudflare API
 
-The Worker in `worker/` exposes the first production-shaped backend slice:
-
-- `GET /api/v1/health`
-- `GET /api/v1/p/:publicId`
-- `POST /api/v1/p/:publicId/payment-intents`
-- `POST /api/v1/p/:publicId/payments/verify`
-
-It persists intents in D1 and independently verifies submitted hashes against Nimiq mainnet JSON-RPC before marking the bond secured.
+The Worker persists profiles, restaurant-scoped staff permissions, intents, passes, and audit events in D1. It independently verifies submitted hashes against Nimiq mainnet JSON-RPC before marking payment or refund complete.
 
 Production API: `https://pactum-api.samuelsuccess234.workers.dev/api/v1`
+
+Production app: `https://pactum-delta.vercel.app`
+
+## Verification and rehearsal
+
+Run `npm run lint`, `npm run typecheck`, `npm run test`, `npm run build`, and `npm run worker:check`. Apply remote migrations with `npx wrangler d1 migrations apply pactum-db --remote --config worker/wrangler.jsonc`. `worker/seed.sql` is explicitly rehearsal-only and must never be presented as a live transaction.
+
+Pactum is not escrow. NIM goes directly to the restaurant. Refunds are separate restaurant-authorized payments back to the original payer.
 
 ## License
 

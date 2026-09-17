@@ -22,6 +22,7 @@ export type PublicBond = {
   policyText: string | null
   cancellationDeadline: string | null
   serviceStatus: 'CHECKED_IN' | 'APPLIED' | 'REFUND_PENDING' | 'REFUNDED' | null
+  terminalStatus: 'CANCELLED' | 'FORFEITED' | 'EXPIRED' | null
 }
 
 export type Role = 'GUEST' | 'RESTAURANT'
@@ -36,7 +37,8 @@ export type Profile = {
 export type RegistrationNonce = { id: string; message: string; expiresAt: string }
 export type PassToken = { token: string; shortCode: string; expiresAt: string; passVersion: number }
 export type PassValidation = { valid: true; publicId: string; restaurant: string; amountLuna: number; status: string; holder: string | null; expiresAt: string }
-export type RestaurantBond = { id: string; public_id: string; reservation_at: string; party_size: number; amount_luna: number; status: string; service_status?: string | null }
+export type RestaurantBond = { id: string; public_id: string; reservation_at: string; party_size: number; amount_luna: number; status: string; service_status?: string | null; terminal_status?: string | null }
+export type StaffMember = { id: string; wallet_address: string; can_refund: number; revoked_at: string | null; created_at: string }
 export type AuditEvent = { event_type: string; from_status: string | null; to_status: string | null; metadata: string; created_at: string }
 
 type ApiError = { error?: { code?: string; message?: string } }
@@ -149,3 +151,8 @@ export async function verifyRefund(publicId: string, intentId: string, txHash: s
   if (!response.ok) throw new Error(payload.error?.message || 'Refund verification failed.')
   return payload.serviceStatus === 'REFUNDED'
 }
+
+export function getStaff(restaurantId: string): Promise<{ members: StaffMember[] }> { return api(`/restaurants/${restaurantId}/staff`, { method: 'GET', headers: authHeaders() }) }
+export function addStaff(restaurantId: string, walletAddress: string, canRefund: boolean): Promise<unknown> { return api(`/restaurants/${restaurantId}/staff`, { method: 'POST', headers: { ...authHeaders(), 'content-type': 'application/json', 'idempotency-key': crypto.randomUUID() }, body: JSON.stringify({ walletAddress, canRefund }) }) }
+export function revokeStaff(restaurantId: string, memberId: string): Promise<unknown> { return api(`/restaurants/${restaurantId}/staff/${memberId}`, { method: 'POST', headers: { ...authHeaders(), 'idempotency-key': crypto.randomUUID() } }) }
+export function closeBond(publicId: string, action: 'cancel' | 'forfeit' | 'expire'): Promise<{ terminalStatus: string }> { return api(`/staff/bonds/${publicId}/${action}`, { method: 'POST', headers: { ...authHeaders(), 'idempotency-key': crypto.randomUUID() } }) }

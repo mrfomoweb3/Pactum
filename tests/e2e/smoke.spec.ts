@@ -1,0 +1,3 @@
+import { expect, test } from '@playwright/test'
+test('landing explains the promise and legal pages work', async ({ page }) => { await page.goto('/'); await expect(page.getByRole('heading', { level: 1 })).toBeVisible(); await page.goto('/privacy'); await expect(page.getByRole('heading', { name: 'Privacy, plainly.' })).toBeVisible(); await page.goto('/terms'); await expect(page.getByRole('heading', { name: 'Terms and limitations.' })).toBeVisible() })
+test('unknown public bond fails without a blank screen', async ({ page }) => { await page.goto('/p/definitely-missing'); await expect(page.getByRole('alert')).toBeVisible(); await expect(page.getByRole('alert')).toContainText(/not found|could not|failed/i) })

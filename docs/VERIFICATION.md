@@ -34,3 +34,18 @@ Nimiq Pay device testing, a real small-value transaction, and independent backen
 | Live `HEAD /staff/scan` on Vercel | Passed — HTTP 200 with SPA fallback |
 
 Automated checks cover the state-machine and server logic. The new transfer-signature, staff check-in/apply, and wallet-confirmed refund journeys still require a manual test inside Nimiq Pay with distinct controlled guest and restaurant wallets; they are not claimed as device-tested yet.
+
+## 2026-09-17 release hardening
+
+| Check | Result |
+|---|---|
+| Lint, typecheck, unit tests, build, Worker dry-run | Passed |
+| Unit tests | Passed — 9 tests on Vitest 5.0.1 |
+| Playwright mobile smoke suite | Passed — 2 tests |
+| `npm audit --audit-level=high` | Passed — 0 vulnerabilities after Vitest upgrade |
+| Secret-pattern scan | Passed — only explanatory references to seed phrases matched |
+| D1 migration `0006_staff_and_terminal_states.sql` | Applied successfully |
+| Cloudflare Worker deploy | Passed — version `1a6f3cbb-9317-4dac-82bf-960bf1ae90d6` |
+| Competition rules/scoring review | Completed 2026-09-17 |
+
+Live wallet approval, transfer, staff action, and refund remain the final manual Nimiq Pay test; automated checks do not replace it.
