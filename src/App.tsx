@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link, Navigate, Route, Routes, useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, Navigate, Route, Routes, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { QRCodeSVG } from 'qrcode.react'
 import {
   ArrowLeft, ArrowRight, Check, CheckCircle, Copy, LockKey,
   QrCode, ShieldCheck, Sparkle, UserCircle, Wallet, X,
 } from '@phosphor-icons/react'
 import { connectNimiq, ensureNimiqReady, payBond, signRegistration, walletErrorMessage } from './nimiq'
-import { createPassToken, createPaymentIntent, createRegistrationNonce, getPublicBond, registerProfile, storedProfile, validatePass, verifyPayment, type PassToken, type PassValidation, type PaymentIntent, type Profile, type Role } from './api'
+import { createPassToken, createPaymentIntent, createRegistrationNonce, createRestaurantBond, getPublicBond, registerProfile, storedProfile, validatePass, verifyPayment, type PassToken, type PassValidation, type PaymentIntent, type Profile, type PublicBond, type Role } from './api'
 
 const demo = {
   publicId: 'ca-8f47-aurea',
@@ -97,23 +97,25 @@ function PhonePreview() {
 type AppStep = 'review' | 'wallet' | 'confirm' | 'pending' | 'secured'
 
 function MiniApp() {
+  const { publicId = demo.publicId } = useParams()
   const [step, setStep] = useState<AppStep>('review')
   const [accepted, setAccepted] = useState(false)
   const [wallet, setWallet] = useState('')
   const [error, setError] = useState('')
   const [txHash, setTxHash] = useState('')
+  const [bond, setBond] = useState<PublicBond | null>(null)
 
   useEffect(() => {
     let active = true
-    getPublicBond(demo.publicId)
+    getPublicBond(publicId)
       .then((bond) => {
-        if (!active || bond.status !== 'SECURED' || !bond.paymentTxHash) return
-        setTxHash(bond.paymentTxHash)
-        setStep('secured')
+        if (!active) return
+        setBond(bond)
+        if (bond.status === 'SECURED' && bond.paymentTxHash) { setTxHash(bond.paymentTxHash); setStep('secured') }
       })
-      .catch(() => undefined)
+      .catch((caught) => { if (active) setError(caught instanceof Error ? caught.message : 'Reservation bond not found.') })
     return () => { active = false }
-  }, [])
+  }, [publicId])
   const [intent, setIntent] = useState<PaymentIntent | null>(null)
   const [sheetOpen, setSheetOpen] = useState(false)
   const navigate = useNavigate()
@@ -124,7 +126,7 @@ function MiniApp() {
     setError(''); setStep('wallet')
     try {
       const account = await connectNimiq()
-      const paymentIntent = await createPaymentIntent(demo.publicId, account.address)
+      const paymentIntent = await createPaymentIntent(publicId, account.address)
       setWallet(account.address); setIntent(paymentIntent); setStep('confirm')
     } catch (caught) {
       setStep('review')
@@ -137,7 +139,7 @@ function MiniApp() {
     try {
       if (!intent) throw new Error('The payment request expired. Connect your wallet again.')
       if (txHash) {
-        const verified = await verifyPayment(demo.publicId, intent.id, txHash)
+        const verified = await verifyPayment(publicId, intent.id, txHash)
         if (!verified) throw new Error('Payment detected and still confirming. Do not pay again; check its status shortly.')
         setStep('secured')
         return
@@ -148,7 +150,7 @@ function MiniApp() {
       let verified = false
       for (const delay of [0, 1500, 3000, 5000]) {
         if (delay) await new Promise((resolve) => setTimeout(resolve, delay))
-        verified = await verifyPayment(demo.publicId, intent.id, hash)
+        verified = await verifyPayment(publicId, intent.id, hash)
         if (verified) break
       }
       if (!verified) throw new Error('Payment detected and still confirming. Do not pay again; check its status shortly.')
@@ -159,46 +161,51 @@ function MiniApp() {
     }
   }
 
+  const restaurant = bond?.restaurant || demo.restaurant
+  const amountNim = bond ? (bond.amountLuna / 100_000).toString() : demo.nim
+  const reservationDate = bond?.reservationAt ? new Intl.DateTimeFormat('en', { weekday: 'long', day: 'numeric', month: 'long', timeZone: bond.timezone || 'UTC' }).format(new Date(bond.reservationAt)) : demo.date
+  const reservationTime = bond?.reservationAt ? new Intl.DateTimeFormat('en', { hour: 'numeric', minute: '2-digit', timeZone: bond.timezone || 'UTC' }).format(new Date(bond.reservationAt)) : demo.time
+  const partySize = bond?.partySize || demo.party
   return <div className="app-shell">
     <header className="app-header"><button aria-label="Back" onClick={() => navigate('/')}><ArrowLeft /></button><Mark/><button aria-label="Account" onClick={() => navigate('/start')}><UserCircle /></button></header>
     <main className="bond-screen">
       {step !== 'secured' ? <>
         <div className="bond-heading"><p>CASA AUREA · RESERVATION BOND</p><h1>Your table is being held.</h1><span>Review the details before you make your promise.</span></div>
         <section className="reservation-card">
-          <div className="reservation-card__brand"><span>CA</span><div><h2>{demo.restaurant}</h2><p>Contemporary dining · Lagos</p></div><ShieldCheck weight="fill"/></div>
-          <div className="date-lockup"><span>SEP</span><strong>18</strong><div><b>{demo.date}</b><p>{demo.time} · {demo.party} guests</p></div></div>
-          <div className="amount-row"><span>Reservation bond</span><strong>{demo.nim} <small>NIM</small></strong></div>
+          <div className="reservation-card__brand"><span>{restaurant.slice(0, 2).toUpperCase()}</span><div><h2>{restaurant}</h2><p>Verified restaurant wallet</p></div><ShieldCheck weight="fill"/></div>
+          <div className="date-lockup"><span>DATE</span><strong>{bond?.reservationAt ? new Date(bond.reservationAt).getUTCDate() : '18'}</strong><div><b>{reservationDate}</b><p>{reservationTime} · {partySize} guests</p></div></div>
+          <div className="amount-row"><span>Reservation bond</span><strong>{amountNim} <small>NIM</small></strong></div>
           <button className="policy-row" onClick={() => setSheetOpen(true)}><span><LockKey/> Cancellation policy</span><ArrowRight/></button>
         </section>
-        <div className="notice"><ShieldCheck/><p>You are sending <b>{demo.nim} NIM directly to {demo.restaurant}</b> as a reservation bond. Pactum does not hold these funds.</p></div>
+        <div className="notice"><ShieldCheck/><p>You are sending <b>{amountNim} NIM directly to {restaurant}</b> as a reservation bond. Pactum does not hold these funds.</p></div>
         {error && <div className="error-message" role="alert">{error}</div>}
         {step === 'review' && <label className="terms"><input type="checkbox" checked={accepted} onChange={e => setAccepted(e.target.checked)}/><span><Check weight="bold"/></span><p>I understand the cancellation policy and agree to the reservation terms.</p></label>}
         {step === 'confirm' && <div className="wallet-chip"><Wallet weight="fill"/><span>Paying with <b>{shortWallet}</b></span><button onClick={() => {setWallet(''); setStep('review')}}>Change</button></div>}
         <div className="app-action">
           {step === 'review' && <button disabled={!accepted} className="button button--app" onClick={connect}>Secure this table <ArrowRight weight="bold"/></button>}
           {step === 'wallet' && <button disabled className="button button--app">Waiting for Nimiq Pay…</button>}
-          {step === 'confirm' && <button className="button button--app" onClick={pay}>{txHash ? 'Check payment status' : `Confirm ${demo.nim} NIM`} <ArrowRight weight="bold"/></button>}
+          {step === 'confirm' && <button className="button button--app" onClick={pay}>{txHash ? 'Check payment status' : `Confirm ${amountNim} NIM`} <ArrowRight weight="bold"/></button>}
           {step === 'pending' && <button disabled className="button button--app">Confirming payment…</button>}
           <p><LockKey weight="fill"/> Confirmed securely in Nimiq Pay</p>
         </div>
-      </> : <SecuredPass txHash={txHash}/>} 
+      </> : <SecuredPass txHash={txHash} publicId={publicId} bond={bond}/>}
     </main>
-    {sheetOpen && <div className="sheet-backdrop" onClick={() => setSheetOpen(false)}><aside className="sheet" onClick={e => e.stopPropagation()}><button className="sheet__close" onClick={() => setSheetOpen(false)}><X/></button><p>Cancellation policy</p><h2>A clear promise,<br/>in plain language.</h2><p>{demo.policy}</p><div><CheckCircle weight="fill"/><span>Funds return to the original payer when a full refund is approved.</span></div><button className="button button--app" onClick={() => setSheetOpen(false)}>I understand</button></aside></div>}
+    {sheetOpen && <div className="sheet-backdrop" onClick={() => setSheetOpen(false)}><aside className="sheet" onClick={e => e.stopPropagation()}><button className="sheet__close" onClick={() => setSheetOpen(false)}><X/></button><p>Cancellation policy</p><h2>A clear promise,<br/>in plain language.</h2><p>{bond?.policyText || demo.policy}</p><div><CheckCircle weight="fill"/><span>Funds return to the original payer when a full refund is approved.</span></div><button className="button button--app" onClick={() => setSheetOpen(false)}>I understand</button></aside></div>}
   </div>
 }
 
-function SecuredPass({ txHash }: { txHash: string }) {
+function SecuredPass({ txHash, publicId, bond }: { txHash: string; publicId: string; bond: PublicBond | null }) {
   const [pass, setPass] = useState<PassToken | null>(null)
   const [error, setError] = useState('')
   const profile = storedProfile()
   async function revealPass() {
     setError('')
-    try { setPass(await createPassToken(demo.publicId)) } catch (caught) { setError(caught instanceof Error ? caught.message : 'Could not create the pass.') }
+    try { setPass(await createPassToken(publicId)) } catch (caught) { setError(caught instanceof Error ? caught.message : 'Could not create the pass.') }
   }
   const scanUrl = pass ? `${window.location.origin}/staff/scan?token=${pass.token}` : ''
   return <div className="secured">
     <div className="secured__seal"><Check weight="bold"/></div><p>RESERVATION SECURED</p><h1>Your table awaits.</h1><span>The restaurant has received your bond.</span>
-    <section className="pass-card"><div className="pass-card__top"><span>PACTUM / 01</span><b>CASA AUREA</b></div><div className="pass-date"><strong>18</strong><div>SEPTEMBER<br/><b>FRI · 8:00 PM</b></div></div><div className="pass-details"><span>PARTY<b>4 guests</b></span><span>BOND<b>{demo.nim} NIM</b></span></div><div className="pass-code">{pass ? <QRCodeSVG value={scanUrl} size={164} level="M" marginSize={2}/> : <QrCode size={124} weight="thin"/>}<small>{pass ? pass.shortCode : 'WALLET-BOUND PASS'}</small>{pass && <em>Refreshes in 5 minutes for your safety</em>}</div></section>
+    <section className="pass-card"><div className="pass-card__top"><span>PACTUM / 01</span><b>{bond?.restaurant || demo.restaurant}</b></div><div className="pass-date"><strong>{bond?.reservationAt ? new Date(bond.reservationAt).getUTCDate() : '18'}</strong><div>RESERVATION<br/><b>{bond?.reservationAt ? new Date(bond.reservationAt).toLocaleString() : 'FRI · 8:00 PM'}</b></div></div><div className="pass-details"><span>PARTY<b>{bond?.partySize || demo.party} guests</b></span><span>BOND<b>{bond ? bond.amountLuna / 100_000 : demo.nim} NIM</b></span></div><div className="pass-code">{pass ? <QRCodeSVG value={scanUrl} size={164} level="M" marginSize={2}/> : <QrCode size={124} weight="thin"/>}<small>{pass ? pass.shortCode : 'WALLET-BOUND PASS'}</small>{pass && <em>Refreshes in 5 minutes for your safety</em>}</div></section>
     <div className="success-row"><CheckCircle weight="fill"/><span>Payment verified</span><code>{txHash ? `${txHash.slice(0, 10)}…${txHash.slice(-6)}` : 'Network confirmed'}</code></div>
     {error && <div className="error-message" role="alert">{error}</div>}
     {profile?.role === 'GUEST' ? <button className="button button--app" onClick={revealPass}>{pass ? 'Refresh secure QR' : 'Reveal secure QR'} <ArrowRight weight="bold"/></button> : <Link className="button button--app" to="/start?role=guest&returnTo=pass">Create guest profile to reveal QR <ArrowRight weight="bold"/></Link>}<button className="secondary-action" onClick={() => navigator.clipboard.writeText(window.location.href)}><Copy/> Copy reservation link</button>
@@ -273,7 +280,43 @@ function Privacy() {
 }
 
 function NewBond() {
-  return <div className="workspace"><header><Mark/><Link to="/restaurant"><X/></Link></header><main><p className="eyebrow">New reservation bond</p><h1>Set the promise.</h1><div className="profile-form"><label>Reservation date and time<input type="datetime-local"/></label><label>Party size<input type="number" min="1" max="20" defaultValue="4"/></label><label>Bond amount in NIM<input inputMode="decimal" defaultValue="0.01"/></label><label>Cancellation policy<textarea defaultValue={demo.policy}/></label><button className="button button--app" type="button">Review reservation bond <ArrowRight/></button></div></main></div>
+  const profile = storedProfile()
+  const [reservationAt, setReservationAt] = useState('')
+  const [deadline, setDeadline] = useState('')
+  const [partySize, setPartySize] = useState('4')
+  const [amount, setAmount] = useState('0.01')
+  const [policy, setPolicy] = useState(demo.policy)
+  const [reference, setReference] = useState('')
+  const [reviewing, setReviewing] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [created, setCreated] = useState<{ publicId: string } | null>(null)
+  if (!profile || profile.role !== 'RESTAURANT') return <Navigate to="/start?role=restaurant" replace/>
+  const restaurantProfile = profile
+  function amountLuna(): number {
+    if (!/^\d+(?:\.\d{1,5})?$/.test(amount)) return 0
+    const [whole, fraction = ''] = amount.split('.')
+    return Number(whole) * 100_000 + Number(fraction.padEnd(5, '0'))
+  }
+  function review() {
+    setError('')
+    if (!reservationAt || new Date(reservationAt).getTime() <= Date.now()) return setError('Choose a future reservation time.')
+    if (!deadline || new Date(deadline) >= new Date(reservationAt)) return setError('Cancellation deadline must be before the reservation.')
+    if (Number(partySize) < 1 || Number(partySize) > 20) return setError('Party size must be between 1 and 20.')
+    if (!amountLuna()) return setError('Enter a valid NIM amount with no more than five decimal places.')
+    if (policy.trim().length < 10) return setError('Add a clear cancellation policy.')
+    setReviewing(true)
+  }
+  async function create() {
+    setBusy(true); setError('')
+    try {
+      const result = await createRestaurantBond(restaurantProfile.id, { reservationAt: new Date(reservationAt).toISOString(), cancellationDeadline: new Date(deadline).toISOString(), partySize: Number(partySize), amountLuna: amountLuna(), policyText: policy, externalReference: reference || undefined })
+      setCreated(result)
+    } catch (caught) { setError(caught instanceof Error ? caught.message : 'The reservation bond could not be created.') } finally { setBusy(false) }
+  }
+  const link = created ? `${window.location.origin}/p/${created.publicId}` : ''
+  return <div className="workspace"><header><Mark/><Link to="/restaurant"><X/></Link></header><main><p className="eyebrow">New reservation bond</p><h1>{created ? 'Ready to share.' : reviewing ? 'Review the promise.' : 'Set the promise.'}</h1>
+    {created ? <section className="created-bond"><CheckCircle weight="fill"/><h2>Reservation bond created</h2><p>The terms are now published. Share this link with the guest who will secure the table.</p><code>{link}</code><div><button className="button button--app" onClick={() => navigator.clipboard.writeText(link)}><Copy/> Copy guest link</button><Link className="button workspace__secondary" to={`/p/${created.publicId}`}>Open public bond <ArrowRight/></Link></div></section> : reviewing ? <section className="bond-review"><div><span>RESTAURANT</span><b>{profile.displayName}</b></div><div><span>RESERVATION</span><b>{new Date(reservationAt).toLocaleString()} · {partySize} guests</b></div><div><span>BOND</span><b>{amount} NIM</b></div><div><span>CANCEL BY</span><b>{new Date(deadline).toLocaleString()}</b></div><div><span>POLICY</span><p>{policy}</p></div><div className="review-warning"><ShieldCheck/><p>NIM will go directly to <b>{profile.walletAddress}</b>. Published payment terms cannot be silently changed.</p></div><div className="review-actions"><button className="button workspace__secondary" onClick={() => setReviewing(false)}>Edit terms</button><button className="button button--app" disabled={busy} onClick={create}>{busy ? 'Creating…' : 'Publish reservation bond'} <ArrowRight/></button></div></section> : <div className="profile-form"><label>Reservation date and time<input type="datetime-local" value={reservationAt} onChange={e => setReservationAt(e.target.value)}/></label><label>Cancellation deadline<input type="datetime-local" value={deadline} onChange={e => setDeadline(e.target.value)}/></label><label>Party size<input type="number" min="1" max="20" value={partySize} onChange={e => setPartySize(e.target.value)}/></label><label>Bond amount in NIM<input inputMode="decimal" value={amount} onChange={e => setAmount(e.target.value)} /></label><label>External reference <small>Optional — for your own records</small><input value={reference} maxLength={120} onChange={e => setReference(e.target.value)} placeholder="RES-2048"/></label><label>Cancellation policy<textarea maxLength={600} value={policy} onChange={e => setPolicy(e.target.value)}/><small>{policy.length}/600 characters</small></label><button className="button button--app" type="button" onClick={review}>Review reservation bond <ArrowRight/></button></div>}{error && <div className="error-message" role="alert">{error}</div>}</main></div>
 }
 
 function App() {

@@ -11,8 +11,16 @@ export type PaymentIntent = {
 
 export type PublicBond = {
   publicId: string
+  restaurant: string
+  amountLuna: number
+  payoutAddress: string
   status: 'OPEN' | 'PAYMENT_PENDING' | 'SECURED'
   paymentTxHash: string | null
+  reservationAt: string | null
+  timezone: string | null
+  partySize: number | null
+  policyText: string | null
+  cancellationDeadline: string | null
 }
 
 export type Role = 'GUEST' | 'RESTAURANT'
@@ -88,4 +96,21 @@ export function createPassToken(publicId: string): Promise<PassToken> {
 export function validatePass(input: { token?: string; code?: string }): Promise<PassValidation> {
   const query = input.token ? `token=${encodeURIComponent(input.token)}` : `code=${encodeURIComponent(input.code || '')}`
   return api(`/passes/validate?${query}`, { method: 'GET' })
+}
+
+export type CreateBondInput = {
+  reservationAt: string
+  partySize: number
+  amountLuna: number
+  policyText: string
+  cancellationDeadline: string
+  externalReference?: string
+}
+
+export function createRestaurantBond(restaurantId: string, input: CreateBondInput): Promise<{ bondId: string; publicId: string; status: 'OPEN' }> {
+  return api(`/restaurants/${restaurantId}/bonds`, {
+    method: 'POST',
+    headers: { ...authHeaders(), 'content-type': 'application/json', 'idempotency-key': crypto.randomUUID() },
+    body: JSON.stringify(input),
+  })
 }

@@ -17,6 +17,13 @@ type Bond = {
   payer_address: string | null
   holder_address: string | null
   pass_version: number
+  restaurant_profile_id: string | null
+  reservation_at: string | null
+  restaurant_timezone: string | null
+  party_size: number | null
+  policy_text: string | null
+  cancellation_deadline: string | null
+  external_reference: string | null
 }
 
 type Profile = {
@@ -269,6 +276,52 @@ async function route(request: Request, env: Env): Promise<Response> {
     return json(request, env, { id: profile.id, walletAddress: profile.wallet_address, role: profile.role, displayName: profile.display_name, restaurantSlug: profile.restaurant_slug, timezone: profile.timezone })
   }
 
+  const restaurantBonds = path.match(/^\/api\/v1\/restaurants\/([a-f0-9-]+)\/bonds$/)
+  if (restaurantBonds && request.method === 'POST') {
+    const profile = await authenticatedProfile(request, env)
+    if (!profile || profile.role !== 'RESTAURANT' || profile.id !== restaurantBonds[1]) return fail(request, env, 403, 'RESTAURANT_AUTH_REQUIRED', 'Sign in with the restaurant wallet that owns this profile.')
+    const idempotencyKey = request.headers.get('idempotency-key')
+    if (!idempotencyKey || idempotencyKey.length < 16 || idempotencyKey.length > 128) return fail(request, env, 400, 'IDEMPOTENCY_KEY_REQUIRED', 'A valid Idempotency-Key header is required.')
+    const body = await boundedJson<{ reservationAt?: string; partySize?: number; amountLuna?: number; policyText?: string; cancellationDeadline?: string; externalReference?: string }>(request)
+    const reservationAt = new Date(body.reservationAt || '')
+    const cancellationDeadline = new Date(body.cancellationDeadline || '')
+    const partySize = Number(body.partySize)
+    const amountLuna = Number(body.amountLuna)
+    const policyText = (body.policyText || '').trim()
+    if (!Number.isFinite(reservationAt.getTime()) || reservationAt.getTime() <= Date.now()) return fail(request, env, 400, 'INVALID_RESERVATION_TIME', 'Reservation time must be in the future.')
+    if (!Number.isFinite(cancellationDeadline.getTime()) || cancellationDeadline >= reservationAt) return fail(request, env, 400, 'INVALID_CANCELLATION_DEADLINE', 'Cancellation deadline must be before the reservation.')
+    if (!Number.isInteger(partySize) || partySize < 1 || partySize > 20) return fail(request, env, 400, 'INVALID_PARTY_SIZE', 'Party size must be between 1 and 20.')
+    if (!Number.isSafeInteger(amountLuna) || amountLuna < 1) return fail(request, env, 400, 'INVALID_AMOUNT', 'Enter a positive NIM bond amount.')
+    if (policyText.length < 10 || policyText.length > 600) return fail(request, env, 400, 'INVALID_POLICY', 'Policy must be between 10 and 600 characters.')
+    const existing = await env.DB.prepare("SELECT metadata FROM bond_events WHERE event_type = 'BOND_CREATED' AND json_extract(metadata, '$.idempotencyKey') = ?").bind(idempotencyKey).first<{ metadata: string }>()
+    if (existing) {
+      const metadata = JSON.parse(existing.metadata) as { publicId: string; bondId: string }
+      return json(request, env, metadata)
+    }
+    const id = crypto.randomUUID()
+    const publicId = randomToken(16)
+    const now = new Date().toISOString()
+    const timezone = profile.timezone || 'UTC'
+    await env.DB.batch([
+      env.DB.prepare(`INSERT INTO bonds (id, public_id, restaurant_name, payout_address, amount_luna, status, holder_address, pass_version,
+        restaurant_profile_id, reservation_at, restaurant_timezone, party_size, policy_text, cancellation_deadline, external_reference, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 'OPEN', NULL, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .bind(id, publicId, profile.display_name, profile.wallet_address, amountLuna, profile.id, reservationAt.toISOString(), timezone, partySize, policyText, cancellationDeadline.toISOString(), (body.externalReference || '').trim().slice(0, 120) || null, now, now),
+      env.DB.prepare(`INSERT INTO bond_events (id, bond_id, event_type, from_status, to_status, metadata, created_at)
+        VALUES (?, ?, 'BOND_CREATED', NULL, 'OPEN', ?, ?)`)
+        .bind(crypto.randomUUID(), id, JSON.stringify({ idempotencyKey, publicId, bondId: id }), now),
+    ])
+    return json(request, env, { bondId: id, publicId, status: 'OPEN' }, 201)
+  }
+
+  if (restaurantBonds && request.method === 'GET') {
+    const profile = await authenticatedProfile(request, env)
+    if (!profile || profile.role !== 'RESTAURANT' || profile.id !== restaurantBonds[1]) return fail(request, env, 403, 'RESTAURANT_AUTH_REQUIRED', 'This restaurant profile is required.')
+    const bonds = await env.DB.prepare(`SELECT id, public_id, reservation_at, party_size, amount_luna, status
+      FROM bonds WHERE restaurant_profile_id = ? ORDER BY reservation_at ASC LIMIT 100`).bind(profile.id).all()
+    return json(request, env, { bonds: bonds.results })
+  }
+
   const publicBond = path.match(/^\/api\/v1\/p\/([a-zA-Z0-9-]+)$/)
   if (request.method === 'GET' && publicBond) {
     const bond = await getBond(env, publicBond[1])
@@ -280,6 +333,11 @@ async function route(request: Request, env: Env): Promise<Response> {
       payoutAddress: bond.payout_address,
       status: bond.status,
       paymentTxHash: bond.payment_tx_hash,
+      reservationAt: bond.reservation_at,
+      timezone: bond.restaurant_timezone,
+      partySize: bond.party_size,
+      policyText: bond.policy_text,
+      cancellationDeadline: bond.cancellation_deadline,
     })
   }
 
