@@ -5,7 +5,7 @@ import {
   QrCode, ShieldCheck, Sparkle, UserCircle, Wallet, X,
 } from '@phosphor-icons/react'
 import { connectNimiq, ensureNimiqReady, payBond, walletErrorMessage } from './nimiq'
-import { createPaymentIntent, verifyPayment, type PaymentIntent } from './api'
+import { createPaymentIntent, getPublicBond, verifyPayment, type PaymentIntent } from './api'
 
 const demo = {
   publicId: 'ca-8f47-aurea',
@@ -101,6 +101,18 @@ function MiniApp() {
   const [wallet, setWallet] = useState('')
   const [error, setError] = useState('')
   const [txHash, setTxHash] = useState('')
+
+  useEffect(() => {
+    let active = true
+    getPublicBond(demo.publicId)
+      .then((bond) => {
+        if (!active || bond.status !== 'SECURED' || !bond.paymentTxHash) return
+        setTxHash(bond.paymentTxHash)
+        setStep('secured')
+      })
+      .catch(() => undefined)
+    return () => { active = false }
+  }, [])
   const [intent, setIntent] = useState<PaymentIntent | null>(null)
   const [sheetOpen, setSheetOpen] = useState(false)
   const navigate = useNavigate()

@@ -22,11 +22,14 @@ type PaymentIntent = {
   network_id: number
   expires_at: string
   consumed_at: string | null
+  created_at: string
 }
 
 type NimiqTransaction = {
   hash: string
+  timestamp: number
   confirmations: number
+  relatedAddresses: string[]
   from: string
   to: string
   value: number
@@ -83,7 +86,9 @@ export function verifyTransaction(tx: NimiqTransaction, intent: PaymentIntent): 
   const failures: string[] = []
   if (!tx.hash) failures.push('missing_hash')
   if (normalizedAddress(tx.to) !== normalizedAddress(intent.recipient_address)) failures.push('wrong_recipient')
-  if (normalizedAddress(tx.from) !== normalizedAddress(intent.payer_address)) failures.push('wrong_sender')
+  const payer = normalizedAddress(intent.payer_address)
+  const payerIsRelated = tx.relatedAddresses.some((address) => normalizedAddress(address) === payer)
+  if (normalizedAddress(tx.from) !== payer && !payerIsRelated) failures.push('wrong_sender')
   if (tx.value !== intent.amount_luna) failures.push('wrong_amount')
   if (tx.networkId !== intent.network_id) failures.push('wrong_network')
   if (tx.confirmations < 1) failures.push('unconfirmed')
@@ -196,14 +201,18 @@ async function route(request: Request, env: Env): Promise<Response> {
       .bind(body.intentId, bond.id).first<PaymentIntent>()
     if (!intent) return fail(request, env, 404, 'PAYMENT_INTENT_NOT_FOUND', 'Payment intent not found.')
     if (intent.consumed_at) return fail(request, env, 409, 'PAYMENT_INTENT_CONSUMED', 'This payment intent has already been used.')
-    if (Date.parse(intent.expires_at) < Date.now()) return fail(request, env, 409, 'PAYMENT_INTENT_EXPIRED', 'This payment intent has expired.')
-
     let tx: NimiqTransaction
     try {
       tx = await rpc<NimiqTransaction>(env, 'getTransactionByHash', [body.txHash.toLowerCase()])
     } catch (error) {
       console.error(JSON.stringify({ message: 'nimiq verification lookup failed', requestId: requestId(request), error: error instanceof Error ? error.message : String(error) }))
       return fail(request, env, 202, 'PAYMENT_CONFIRMING', 'Payment has not been confirmed yet. Check again shortly.')
+    }
+    const transactionTime = tx.timestamp
+    const earliestValidTime = Date.parse(intent.created_at) - 2 * 60 * 1000
+    const latestValidTime = Date.parse(intent.expires_at) + 2 * 60 * 1000
+    if (!Number.isFinite(transactionTime) || transactionTime < earliestValidTime || transactionTime > latestValidTime) {
+      return fail(request, env, 409, 'PAYMENT_OUTSIDE_INTENT_WINDOW', 'The transaction was not broadcast during this payment intent.')
     }
     const failures = verifyTransaction(tx, intent)
     if (failures.length) {

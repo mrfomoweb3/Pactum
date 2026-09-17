@@ -9,6 +9,12 @@ export type PaymentIntent = {
   expiresAt: string
 }
 
+export type PublicBond = {
+  publicId: string
+  status: 'OPEN' | 'PAYMENT_PENDING' | 'SECURED'
+  paymentTxHash: string | null
+}
+
 type ApiError = { error?: { code?: string; message?: string } }
 
 async function api<T>(path: string, init: RequestInit): Promise<T> {
@@ -24,6 +30,10 @@ export function createPaymentIntent(publicId: string, payerAddress: string): Pro
     headers: { 'content-type': 'application/json', 'idempotency-key': crypto.randomUUID() },
     body: JSON.stringify({ payerAddress }),
   })
+}
+
+export function getPublicBond(publicId: string): Promise<PublicBond> {
+  return api(`/p/${publicId}`, { method: 'GET' })
 }
 
 export async function verifyPayment(publicId: string, intentId: string, txHash: string): Promise<boolean> {
