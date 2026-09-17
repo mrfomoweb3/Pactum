@@ -88,20 +88,20 @@ Transfer is an event, not a payment state. It changes `holder_address` and incre
 
 ```mermaid
 flowchart TB
-    subgraph NP[Nimiq Pay]
-        UI[React Mini App]
-        SDK[@nimiq/mini-app-sdk]
-        WALLET[User wallet]
+    subgraph NP["Nimiq Pay"]
+        UI["React Mini App"]
+        SDK["Nimiq Mini App SDK"]
+        WALLET["User wallet"]
         UI --> SDK --> WALLET
     end
 
-    subgraph CF[Cloudflare]
-        API[TypeScript Worker API]
-        AUTH[Nonce and signature verifier]
-        STATE[Bond state machine]
-        VERIFY[Payment and refund verifier]
-        PASS[Pass and transfer service]
-        DB[(D1 database)]
+    subgraph CF["Cloudflare"]
+        API["TypeScript Worker API"]
+        AUTH["Nonce and signature verifier"]
+        STATE["Bond state machine"]
+        VERIFY["Payment and refund verifier"]
+        PASS["Pass and transfer service"]
+        DB["D1 database"]
         API --> AUTH
         API --> STATE
         API --> VERIFY
@@ -112,10 +112,10 @@ flowchart TB
         PASS --> DB
     end
 
-    RPC[Nimiq mainnet JSON-RPC]
-    UI -->|HTTPS /api/v1| API
-    WALLET -->|sign and send NIM| RPC
-    VERIFY -->|independent lookup| RPC
+    RPC["Nimiq mainnet RPC"]
+    UI -->|HTTPS API| API
+    WALLET -->|Sign and send NIM| RPC
+    VERIFY -->|Independent lookup| RPC
 ```
 
 ### Trust boundaries
