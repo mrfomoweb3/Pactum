@@ -1,10 +1,10 @@
 # Pactum
 
+![Pactum landing page — A promise, kept](public/pactum-ui-overview.png)
+
 > Protect the table without trapping the guest.
 
 [Live app](https://pactum-delta.vercel.app/) · [API health](https://pactum-api.samuelsuccess234.workers.dev/api/v1/health) · [Feasibility evidence](docs/FEASIBILITY.md) · [Verification record](docs/VERIFICATION.md)
-
-![Pactum — transferable reservation bonds for fine dining](public/pactum-dining-hero.png)
 
 ## The problem
 
