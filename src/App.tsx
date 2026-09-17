@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Link, Navigate, Route, Routes, useNavigate } from 'react-router-dom'
+import { Link, Navigate, Route, Routes, useNavigate, useSearchParams } from 'react-router-dom'
+import { QRCodeSVG } from 'qrcode.react'
 import {
   ArrowLeft, ArrowRight, Check, CheckCircle, Copy, LockKey,
   QrCode, ShieldCheck, Sparkle, UserCircle, Wallet, X,
 } from '@phosphor-icons/react'
-import { connectNimiq, ensureNimiqReady, payBond, walletErrorMessage } from './nimiq'
-import { createPaymentIntent, getPublicBond, verifyPayment, type PaymentIntent } from './api'
+import { connectNimiq, ensureNimiqReady, payBond, signRegistration, walletErrorMessage } from './nimiq'
+import { createPassToken, createPaymentIntent, createRegistrationNonce, getPublicBond, registerProfile, storedProfile, validatePass, verifyPayment, type PassToken, type PassValidation, type PaymentIntent, type Profile, type Role } from './api'
 
 const demo = {
   publicId: 'ca-8f47-aurea',
@@ -29,7 +30,7 @@ function Landing() {
     <header className="site-nav">
       <Mark />
       <nav aria-label="Main navigation"><a href="#why">Why Pactum</a><a href="#how">How it works</a></nav>
-      <button className="nav-cta" onClick={() => navigate(`/p/${demo.publicId}`)}>Open mini app <ArrowRight weight="bold" /></button>
+      <button className="nav-cta" onClick={() => navigate('/start')}>Connect wallet <ArrowRight weight="bold" /></button>
     </header>
 
     <main>
@@ -40,7 +41,7 @@ function Landing() {
           <p className="eyebrow">A reservation bond, made gracious</p>
           <h1>A promise,<br/><em>kept.</em></h1>
           <p className="hero__sub">Secure a remarkable table with NIM. Keep the reservation—or pass it on, without a phone call.</p>
-          <button className="button button--ivory" onClick={() => navigate(`/p/${demo.publicId}`)}>View a reservation <ArrowRight weight="bold" /></button>
+          <div className="hero__actions"><button className="button button--ivory" onClick={() => navigate('/start')}>Get started <ArrowRight weight="bold" /></button><button className="hero__link" onClick={() => navigate(`/p/${demo.publicId}`)}>View demo bond</button></div>
         </div>
         <div className="hero__note"><span>PACTUM</span><p>/pak.tum/ <i>n.</i><br/>Latin — an agreement, compact, or promise.</p></div>
       </section>
@@ -159,7 +160,7 @@ function MiniApp() {
   }
 
   return <div className="app-shell">
-    <header className="app-header"><button aria-label="Back" onClick={() => navigate('/')}><ArrowLeft /></button><Mark/><button aria-label="Account"><UserCircle /></button></header>
+    <header className="app-header"><button aria-label="Back" onClick={() => navigate('/')}><ArrowLeft /></button><Mark/><button aria-label="Account" onClick={() => navigate('/start')}><UserCircle /></button></header>
     <main className="bond-screen">
       {step !== 'secured' ? <>
         <div className="bond-heading"><p>CASA AUREA · RESERVATION BOND</p><h1>Your table is being held.</h1><span>Review the details before you make your promise.</span></div>
@@ -187,21 +188,97 @@ function MiniApp() {
 }
 
 function SecuredPass({ txHash }: { txHash: string }) {
+  const [pass, setPass] = useState<PassToken | null>(null)
+  const [error, setError] = useState('')
+  const profile = storedProfile()
+  async function revealPass() {
+    setError('')
+    try { setPass(await createPassToken(demo.publicId)) } catch (caught) { setError(caught instanceof Error ? caught.message : 'Could not create the pass.') }
+  }
+  const scanUrl = pass ? `${window.location.origin}/staff/scan?token=${pass.token}` : ''
   return <div className="secured">
     <div className="secured__seal"><Check weight="bold"/></div><p>RESERVATION SECURED</p><h1>Your table awaits.</h1><span>The restaurant has received your bond.</span>
-    <section className="pass-card"><div className="pass-card__top"><span>PACTUM / 01</span><b>CASA AUREA</b></div><div className="pass-date"><strong>18</strong><div>SEPTEMBER<br/><b>FRI · 8:00 PM</b></div></div><div className="pass-details"><span>PARTY<b>4 guests</b></span><span>BOND<b>12.50 NIM</b></span></div><div className="pass-code"><QrCode size={124} weight="thin"/><small>CA–8F47–01</small></div></section>
+    <section className="pass-card"><div className="pass-card__top"><span>PACTUM / 01</span><b>CASA AUREA</b></div><div className="pass-date"><strong>18</strong><div>SEPTEMBER<br/><b>FRI · 8:00 PM</b></div></div><div className="pass-details"><span>PARTY<b>4 guests</b></span><span>BOND<b>{demo.nim} NIM</b></span></div><div className="pass-code">{pass ? <QRCodeSVG value={scanUrl} size={164} level="M" marginSize={2}/> : <QrCode size={124} weight="thin"/>}<small>{pass ? pass.shortCode : 'WALLET-BOUND PASS'}</small>{pass && <em>Refreshes in 5 minutes for your safety</em>}</div></section>
     <div className="success-row"><CheckCircle weight="fill"/><span>Payment verified</span><code>{txHash ? `${txHash.slice(0, 10)}…${txHash.slice(-6)}` : 'Network confirmed'}</code></div>
-    <button className="button button--app">View reservation pass <ArrowRight weight="bold"/></button><button className="secondary-action"><Copy/> Copy reservation link</button>
+    {error && <div className="error-message" role="alert">{error}</div>}
+    {profile?.role === 'GUEST' ? <button className="button button--app" onClick={revealPass}>{pass ? 'Refresh secure QR' : 'Reveal secure QR'} <ArrowRight weight="bold"/></button> : <Link className="button button--app" to="/start?role=guest&returnTo=pass">Create guest profile to reveal QR <ArrowRight weight="bold"/></Link>}<button className="secondary-action" onClick={() => navigator.clipboard.writeText(window.location.href)}><Copy/> Copy reservation link</button>
   </div>
+}
+
+function Start() {
+  const [search] = useSearchParams()
+  const navigate = useNavigate()
+  const requestedRole: Role | null = search.get('role') === 'guest' ? 'GUEST' : search.get('role') === 'restaurant' ? 'RESTAURANT' : null
+  const [role, setRole] = useState<Role | null>(requestedRole)
+  const [wallet, setWallet] = useState('')
+  const [name, setName] = useState('')
+  const [slug, setSlug] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const existing = storedProfile()
+
+  async function connect() {
+    setBusy(true); setError('')
+    try { setWallet((await connectNimiq()).address) } catch (caught) { setError(walletErrorMessage(caught, 'Open Pactum inside Nimiq Pay to connect.')) } finally { setBusy(false) }
+  }
+  async function register() {
+    if (!role) return
+    setBusy(true); setError('')
+    try {
+      const nonce = await createRegistrationNonce(wallet, role)
+      const signed = await signRegistration(nonce.message)
+      const result = await registerProfile({ nonceId: nonce.id, publicKey: signed.publicKey, signature: signed.signature, displayName: name, restaurantSlug: role === 'RESTAURANT' ? slug : undefined, timezone: role === 'RESTAURANT' ? Intl.DateTimeFormat().resolvedOptions().timeZone : undefined })
+      navigate(result.profile.role === 'RESTAURANT' ? '/restaurant' : search.get('returnTo') === 'pass' ? `/p/${demo.publicId}` : '/guest')
+    } catch (caught) { setError(walletErrorMessage(caught, 'Registration could not be completed.')) } finally { setBusy(false) }
+  }
+
+  if (existing) return <ProfileHome profile={existing}/>
+  return <div className="onboarding"><header><Mark/><Link to="/"><X/></Link></header><main>
+    {!role ? <><p className="eyebrow">Begin with your wallet</p><h1>How will you use Pactum?</h1><p className="onboarding__lede">One wallet, one clear role. You can create a venue profile or hold reservation passes.</p><div className="role-grid"><button onClick={() => setRole('RESTAURANT')}><span>01</span><h2>I run a restaurant</h2><p>Publish reservation bonds, receive NIM directly, and welcome verified guests.</p><ArrowRight/></button><button onClick={() => setRole('GUEST')}><span>02</span><h2>I’m a guest</h2><p>Secure a table, keep your QR pass, and transfer it when plans change.</p><ArrowRight/></button></div></> :
+    <><button className="back-link" onClick={() => { setRole(null); setWallet('') }}><ArrowLeft/> Change role</button><p className="eyebrow">{role === 'RESTAURANT' ? 'Restaurant onboarding' : 'Guest onboarding'}</p><h1>{wallet ? 'Create your profile.' : 'Connect your wallet.'}</h1><p className="onboarding__lede">{wallet ? 'You will sign a readable registration message. No payment is required.' : 'Your Nimiq address becomes your secure Pactum identity.'}</p>
+      {!wallet ? <button className="button button--app onboarding__cta" disabled={busy} onClick={connect}><Wallet weight="fill"/>{busy ? 'Waiting for Nimiq Pay…' : 'Connect Nimiq wallet'}</button> : <div className="profile-form"><div className="wallet-chip"><Wallet weight="fill"/><span>{wallet.slice(0, 14)}…{wallet.slice(-6)}</span><b>Connected</b></div><label>{role === 'RESTAURANT' ? 'Restaurant name' : 'Your display name'}<input value={name} maxLength={80} onChange={e => { setName(e.target.value); if (role === 'RESTAURANT') setSlug(e.target.value.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')) }} placeholder={role === 'RESTAURANT' ? 'Casa Aurea' : 'Amara'}/></label>{role === 'RESTAURANT' && <label>Public restaurant URL<input value={slug} onChange={e => setSlug(e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ''))}/><small>pactum.app/r/{slug || 'your-restaurant'}</small></label>}<button className="button button--app" disabled={busy || name.trim().length < 2 || (role === 'RESTAURANT' && !slug)} onClick={register}>{busy ? 'Confirm in Nimiq Pay…' : 'Sign and create profile'} <ArrowRight/></button></div>}
+    </>}{error && <div className="error-message" role="alert">{error}</div>}
+  </main></div>
+}
+
+function ProfileHome({ profile }: { profile: Profile }) {
+  const navigate = useNavigate()
+  return <div className="onboarding"><header><Mark/><Link to="/"><X/></Link></header><main><p className="eyebrow">Wallet connected</p><h1>Welcome back, {profile.displayName}.</h1><div className="profile-summary"><span>{profile.role === 'RESTAURANT' ? 'Restaurant operator' : 'Guest holder'}</span><code>{profile.walletAddress}</code></div><button className="button button--app" onClick={() => navigate(profile.role === 'RESTAURANT' ? '/restaurant' : '/guest')}>Continue <ArrowRight/></button></main></div>
+}
+
+function GuestHome() {
+  const profile = storedProfile()
+  if (!profile || profile.role !== 'GUEST') return <Navigate to="/start?role=guest" replace/>
+  return <div className="workspace"><header><Mark/><span>{profile.displayName}</span></header><main><p className="eyebrow">Guest wallet</p><h1>Your evenings,<br/>kept together.</h1><section className="workspace-card"><span>ACTIVE RESERVATION</span><h2>Casa Aurea</h2><p>Friday, 18 September · 8:00 PM · 4 guests</p><Link className="button button--app" to={`/p/${demo.publicId}`}>Open reservation pass <ArrowRight/></Link></section></main></div>
+}
+
+function RestaurantHome() {
+  const profile = storedProfile()
+  if (!profile || profile.role !== 'RESTAURANT') return <Navigate to="/start?role=restaurant" replace/>
+  return <div className="workspace"><header><Mark/><span>{profile.displayName}</span></header><main><p className="eyebrow">Restaurant workspace</p><h1>Good evening,<br/>{profile.displayName}.</h1><div className="workspace-actions"><Link className="button button--app" to="/restaurant/new">Create reservation bond <ArrowRight/></Link><Link className="button workspace__secondary" to="/staff/scan"><QrCode/> Validate a guest pass</Link></div><section className="workspace-card"><span>UPCOMING</span><h2>Casa Aurea · Table for four</h2><p>Secured · {demo.nim} NIM bond</p></section></main></div>
+}
+
+function StaffScan() {
+  const [search] = useSearchParams()
+  const [code, setCode] = useState('')
+  const [result, setResult] = useState<PassValidation | null>(null)
+  const [error, setError] = useState('')
+  async function check(input: { token?: string; code?: string }) { setError(''); setResult(null); try { setResult(await validatePass(input)) } catch (caught) { setError(caught instanceof Error ? caught.message : 'Pass could not be validated.') } }
+  useEffect(() => { const token = search.get('token'); if (token) void check({ token }) }, [search])
+  return <div className="app-shell"><header className="app-header"><Link to="/restaurant"><ArrowLeft/></Link><Mark/><span/></header><main className="scan-screen"><p className="eyebrow">Staff validation</p><h1>Validate a pass.</h1><div className="scanner-frame"><QrCode size={72}/><p>Scan the guest’s live Pactum QR with this device’s camera, or enter the code below.</p></div><form onSubmit={e => { e.preventDefault(); void check({ code }) }}><label>Manual pass code<input value={code} onChange={e => setCode(e.target.value.toUpperCase())} placeholder="A1B2C3D4E5" maxLength={10}/></label><button className="button button--app">Validate pass</button></form>{result && <div className="scan-result"><CheckCircle weight="fill"/><h2>Valid current pass</h2><p>{result.restaurant} · {(result.amountLuna / 100000).toFixed(2)} NIM</p><small>Holder {result.holder}</small></div>}{error && <div className="error-message">{error}</div>}</main></div>
 }
 
 function Privacy() {
   return <div className="legal"><Mark/><Link to="/"><ArrowLeft/> Back</Link><h1>Privacy, plainly.</h1><p>Pactum collects the minimum information needed to verify a reservation: wallet addresses, transaction hashes, reservation terms, and an append-only action history. It never receives wallet keys or seed phrases.</p><p>Public reservation links do not reveal guest identity, wallet history, internal notes, or staff information. Financial integrity records are retained; non-financial profile data can be requested for deletion.</p></div>
 }
 
+function NewBond() {
+  return <div className="workspace"><header><Mark/><Link to="/restaurant"><X/></Link></header><main><p className="eyebrow">New reservation bond</p><h1>Set the promise.</h1><div className="profile-form"><label>Reservation date and time<input type="datetime-local"/></label><label>Party size<input type="number" min="1" max="20" defaultValue="4"/></label><label>Bond amount in NIM<input inputMode="decimal" defaultValue="0.01"/></label><label>Cancellation policy<textarea defaultValue={demo.policy}/></label><button className="button button--app" type="button">Review reservation bond <ArrowRight/></button></div></main></div>
+}
+
 function App() {
   useEffect(() => { window.scrollTo(0, 0) }, [])
-  return <Routes><Route path="/" element={<Landing/>}/><Route path="/p/:publicId" element={<MiniApp/>}/><Route path="/privacy" element={<Privacy/>}/><Route path="*" element={<Navigate to="/" replace/>}/></Routes>
+  return <Routes><Route path="/" element={<Landing/>}/><Route path="/start" element={<Start/>}/><Route path="/guest" element={<GuestHome/>}/><Route path="/restaurant" element={<RestaurantHome/>}/><Route path="/restaurant/new" element={<NewBond/>}/><Route path="/staff/scan" element={<StaffScan/>}/><Route path="/p/:publicId" element={<MiniApp/>}/><Route path="/privacy" element={<Privacy/>}/><Route path="*" element={<Navigate to="/" replace/>}/></Routes>
 }
 
 export default App

@@ -61,3 +61,10 @@ export async function signTransfer(message: string) {
   if (isErrorResponse(result)) throw new Error(result.error.message)
   return result
 }
+
+export async function signRegistration(message: string): Promise<{ publicKey: string; signature: string }> {
+  const provider = await init()
+  const result = await provider.sign(message)
+  if (isErrorResponse(result)) throw new Error(result.error.message)
+  return result
+}

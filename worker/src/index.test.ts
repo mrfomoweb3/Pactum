@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { verifyTransaction } from './index'
+import { addressFromPublicKey, verifyTransaction } from './index'
 
 const intent = {
   id: 'intent_1234567890', bond_id: 'bond_1',
@@ -19,6 +19,10 @@ const transaction = {
 }
 
 describe('Nimiq transaction verification', () => {
+  it('derives the official Nimiq address from a public key', () => {
+    expect(addressFromPublicKey('8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c'))
+      .toBe('NQ32 QPH1 MCE9 XQ12 T0E3 N9F3 8DNB FUEY EYUN')
+  })
   it('accepts an exact matching payment', () => expect(verifyTransaction(transaction, intent)).toEqual([]))
   it('rejects mismatched recipient and amount', () => {
     expect(verifyTransaction({ ...transaction, to: 'NQ77 0000 0000 0000 0000 0000 0000 0000 0001', value: 1 }, intent))

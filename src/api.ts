@@ -15,6 +15,19 @@ export type PublicBond = {
   paymentTxHash: string | null
 }
 
+export type Role = 'GUEST' | 'RESTAURANT'
+export type Profile = {
+  id: string
+  walletAddress: string
+  role: Role
+  displayName: string
+  restaurantSlug: string | null
+  timezone: string | null
+}
+export type RegistrationNonce = { id: string; message: string; expiresAt: string }
+export type PassToken = { token: string; shortCode: string; expiresAt: string; passVersion: number }
+export type PassValidation = { valid: true; publicId: string; restaurant: string; amountLuna: number; status: string; holder: string | null; expiresAt: string }
+
 type ApiError = { error?: { code?: string; message?: string } }
 
 async function api<T>(path: string, init: RequestInit): Promise<T> {
@@ -46,4 +59,33 @@ export async function verifyPayment(publicId: string, intentId: string, txHash: 
   if (response.status === 202) return false
   if (!response.ok) throw new Error(payload.error?.message || `Payment verification failed (${response.status})`)
   return payload.verified === true
+}
+
+export function createRegistrationNonce(walletAddress: string, role: Role): Promise<RegistrationNonce> {
+  return api('/auth/nonce', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ walletAddress, role }) })
+}
+
+export async function registerProfile(input: { nonceId: string; publicKey: string; signature: string; displayName: string; restaurantSlug?: string; timezone?: string }): Promise<{ token: string; profile: Profile }> {
+  const result = await api<{ token: string; profile: Profile }>('/auth/register', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(input) })
+  localStorage.setItem('pactum_session', result.token)
+  localStorage.setItem('pactum_profile', JSON.stringify(result.profile))
+  return result
+}
+
+export function storedProfile(): Profile | null {
+  try { return JSON.parse(localStorage.getItem('pactum_profile') || 'null') as Profile | null } catch { return null }
+}
+
+function authHeaders(): HeadersInit {
+  const token = localStorage.getItem('pactum_session')
+  return { authorization: `Bearer ${token || ''}` }
+}
+
+export function createPassToken(publicId: string): Promise<PassToken> {
+  return api(`/p/${publicId}/pass-tokens`, { method: 'POST', headers: authHeaders() })
+}
+
+export function validatePass(input: { token?: string; code?: string }): Promise<PassValidation> {
+  const query = input.token ? `token=${encodeURIComponent(input.token)}` : `code=${encodeURIComponent(input.code || '')}`
+  return api(`/passes/validate?${query}`, { method: 'GET' })
 }

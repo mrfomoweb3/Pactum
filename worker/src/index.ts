@@ -1,5 +1,10 @@
+import { verifyAsync } from '@noble/ed25519'
+import { blake2b } from '@noble/hashes/blake2.js'
+import { sha256 } from '@noble/hashes/sha2.js'
+
 const HASH_RE = /^[0-9a-f]{64}$/i
 const NIMIQ_ADDRESS_RE = /^NQ[0-9]{2}(?: [0-9A-Z]{4}){8}$/
+const HEX_RE = /^[0-9a-f]+$/i
 
 type Bond = {
   id: string
@@ -10,6 +15,17 @@ type Bond = {
   status: 'OPEN' | 'PAYMENT_PENDING' | 'SECURED'
   payment_tx_hash: string | null
   payer_address: string | null
+  holder_address: string | null
+  pass_version: number
+}
+
+type Profile = {
+  id: string
+  wallet_address: string
+  role: 'GUEST' | 'RESTAURANT'
+  display_name: string
+  restaurant_slug: string | null
+  timezone: string | null
 }
 
 type PaymentIntent = {
@@ -53,7 +69,7 @@ function corsHeaders(request: Request, env: Env): HeadersInit {
   const allowOrigin = allowed.includes('*') ? '*' : origin && allowed.includes(origin) ? origin : allowed[0] || 'null'
   return {
     'access-control-allow-origin': allowOrigin,
-    'access-control-allow-headers': 'content-type,idempotency-key',
+    'access-control-allow-headers': 'content-type,idempotency-key,authorization',
     'access-control-allow-methods': 'GET,POST,OPTIONS',
     'access-control-max-age': '86400',
     vary: 'Origin',
@@ -80,6 +96,72 @@ function normalizedAddress(value: string): string {
 
 function utf8Hex(value: string): string {
   return Array.from(new TextEncoder().encode(value), (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+function hexBytes(value: string): Uint8Array {
+  if (value.length % 2) throw new Error('INVALID_HEX')
+  return Uint8Array.from(value.match(/.{2}/g) || [], (byte) => Number.parseInt(byte, 16))
+}
+
+function nimiqBase32(bytes: Uint8Array): string {
+  const alphabet = '0123456789ABCDEFGHJKLMNPQRSTUVXY'
+  let shift = 3; let carry = 0; let result = ''
+  for (const byte of bytes) {
+    let symbol = carry | byte >> shift
+    result += alphabet[symbol & 31]
+    if (shift > 5) { shift -= 5; symbol = byte >> shift; result += alphabet[symbol & 31] }
+    shift = 5 - shift; carry = byte << shift; shift = 8 - shift
+  }
+  if (shift !== 3) result += alphabet[carry & 31]
+  return result
+}
+
+function mod97(value: string): number {
+  let remainder = 0
+  for (const character of value) {
+    const expanded = /[A-Z]/.test(character) ? String(character.charCodeAt(0) - 55) : character
+    for (const digit of expanded) remainder = (remainder * 10 + Number(digit)) % 97
+  }
+  return remainder
+}
+
+export function addressFromPublicKey(publicKeyHex: string): string {
+  const addressBytes = blake2b(hexBytes(publicKeyHex), { dkLen: 32 }).slice(0, 20)
+  const bban = nimiqBase32(addressBytes)
+  const check = String(98 - mod97(`${bban}232600`)).padStart(2, '0')
+  return (`NQ${check}${bban}`).match(/.{1,4}/g)?.join(' ') || ''
+}
+
+function randomToken(bytes = 32): string {
+  const value = crypto.getRandomValues(new Uint8Array(bytes))
+  return Array.from(value, (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+async function verifyWalletSignature(message: string, walletAddress: string, publicKeyHex: string, signatureHex: string): Promise<boolean> {
+  if (!HEX_RE.test(publicKeyHex) || !HEX_RE.test(signatureHex)) return false
+  try {
+    if (normalizedAddress(addressFromPublicKey(publicKeyHex)) !== normalizedAddress(walletAddress)) return false
+    const prefix = `\u0016Nimiq Signed Message:\n${message.length}${message}`
+    const digest = sha256(new TextEncoder().encode(prefix))
+    return verifyAsync(hexBytes(signatureHex), digest, hexBytes(publicKeyHex))
+  } catch {
+    return false
+  }
+}
+
+async function authenticatedProfile(request: Request, env: Env): Promise<Profile | null> {
+  const token = request.headers.get('authorization')?.match(/^Bearer ([0-9a-f]{64})$/i)?.[1]
+  if (!token) return null
+  const tokenHash = await sha256Hex(token)
+  return env.DB.prepare(`SELECT profiles.* FROM sessions
+    JOIN profiles ON profiles.id = sessions.profile_id
+    WHERE sessions.token_hash = ? AND sessions.expires_at > ?`)
+    .bind(tokenHash, new Date().toISOString()).first<Profile>()
 }
 
 export function verifyTransaction(tx: NimiqTransaction, intent: PaymentIntent): string[] {
@@ -133,6 +215,58 @@ async function route(request: Request, env: Env): Promise<Response> {
       nimiq: { networkId: Number(env.NIMIQ_NETWORK_ID), blockNumber },
       requestId: requestId(request),
     })
+  }
+
+  if (request.method === 'POST' && path === '/api/v1/auth/nonce') {
+    const body = await boundedJson<{ walletAddress?: string; role?: string }>(request)
+    const walletAddress = normalizedAddress(body.walletAddress || '')
+    const role = body.role === 'RESTAURANT' ? 'RESTAURANT' : body.role === 'GUEST' ? 'GUEST' : null
+    if (!NIMIQ_ADDRESS_RE.test(walletAddress) || !role) return fail(request, env, 400, 'INVALID_IDENTITY', 'A valid wallet and role are required.')
+    const id = crypto.randomUUID()
+    const nonce = randomToken(16)
+    const now = new Date()
+    const expiresAt = new Date(now.getTime() + 5 * 60 * 1000).toISOString()
+    const message = `Pactum Profile Registration v1\nDomain: pactum-delta.vercel.app\nWallet: ${walletAddress}\nRole: ${role}\nNonce: ${nonce}\nIssued At: ${now.toISOString()}\nExpires At: ${expiresAt}`
+    await env.DB.prepare(`INSERT INTO wallet_nonces (id, wallet_address, role, message, expires_at, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)`).bind(id, walletAddress, role, message, expiresAt, now.toISOString()).run()
+    return json(request, env, { id, message, expiresAt }, 201)
+  }
+
+  if (request.method === 'POST' && path === '/api/v1/auth/register') {
+    const body = await boundedJson<{ nonceId?: string; publicKey?: string; signature?: string; displayName?: string; restaurantSlug?: string; timezone?: string }>(request)
+    const nonce = body.nonceId ? await env.DB.prepare('SELECT * FROM wallet_nonces WHERE id = ?').bind(body.nonceId).first<{
+      id: string; wallet_address: string; role: 'GUEST' | 'RESTAURANT'; message: string; expires_at: string; consumed_at: string | null
+    }>() : null
+    if (!nonce || nonce.consumed_at || nonce.expires_at <= new Date().toISOString()) return fail(request, env, 400, 'NONCE_INVALID', 'This registration request has expired. Please reconnect your wallet.')
+    const displayName = (body.displayName || '').trim()
+    const slug = (body.restaurantSlug || '').trim().toLowerCase()
+    if (displayName.length < 2 || displayName.length > 80) return fail(request, env, 400, 'INVALID_NAME', 'Display name must be between 2 and 80 characters.')
+    if (nonce.role === 'RESTAURANT' && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) return fail(request, env, 400, 'INVALID_SLUG', 'Use a lowercase restaurant URL slug.')
+    const valid = await verifyWalletSignature(nonce.message, nonce.wallet_address, body.publicKey || '', body.signature || '')
+    if (!valid) return fail(request, env, 401, 'INVALID_SIGNATURE', 'The wallet signature could not be verified.')
+    const existing = await env.DB.prepare('SELECT * FROM profiles WHERE wallet_address = ?').bind(nonce.wallet_address).first<Profile>()
+    if (existing && existing.role !== nonce.role) return fail(request, env, 409, 'ROLE_ALREADY_CHOSEN', 'This wallet already has a different Pactum role.')
+    const profileId = existing?.id || crypto.randomUUID()
+    const now = new Date().toISOString()
+    const timezone = nonce.role === 'RESTAURANT' ? (body.timezone || 'UTC').slice(0, 64) : null
+    await env.DB.batch([
+      env.DB.prepare(`INSERT INTO profiles (id, wallet_address, role, display_name, restaurant_slug, timezone, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(wallet_address) DO UPDATE SET display_name = excluded.display_name, restaurant_slug = excluded.restaurant_slug,
+        timezone = excluded.timezone, updated_at = excluded.updated_at`)
+        .bind(profileId, nonce.wallet_address, nonce.role, displayName, nonce.role === 'RESTAURANT' ? slug : null, timezone, now, now),
+      env.DB.prepare('UPDATE wallet_nonces SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL').bind(now, nonce.id),
+    ])
+    const token = randomToken()
+    await env.DB.prepare('INSERT INTO sessions (id, profile_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)')
+      .bind(crypto.randomUUID(), profileId, await sha256Hex(token), new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(), now).run()
+    return json(request, env, { token, profile: { id: profileId, walletAddress: nonce.wallet_address, role: nonce.role, displayName, restaurantSlug: nonce.role === 'RESTAURANT' ? slug : null, timezone } }, 201)
+  }
+
+  if (request.method === 'GET' && path === '/api/v1/me') {
+    const profile = await authenticatedProfile(request, env)
+    if (!profile) return fail(request, env, 401, 'AUTH_REQUIRED', 'Connect and register your wallet first.')
+    return json(request, env, { id: profile.id, walletAddress: profile.wallet_address, role: profile.role, displayName: profile.display_name, restaurantSlug: profile.restaurant_slug, timezone: profile.timezone })
   }
 
   const publicBond = path.match(/^\/api\/v1\/p\/([a-zA-Z0-9-]+)$/)
@@ -225,7 +359,8 @@ async function route(request: Request, env: Env): Promise<Response> {
       await env.DB.batch([
         env.DB.prepare(`UPDATE bonds SET status = 'SECURED', payment_tx_hash = ?, payer_address = ?, updated_at = ?
           WHERE id = ? AND status IN ('OPEN', 'PAYMENT_PENDING') AND payment_tx_hash IS NULL`)
-          .bind(tx.hash.toLowerCase(), normalizedAddress(tx.from), now, bond.id),
+          .bind(tx.hash.toLowerCase(), normalizedAddress(intent.payer_address), now, bond.id),
+        env.DB.prepare('UPDATE bonds SET holder_address = ? WHERE id = ? AND holder_address IS NULL').bind(normalizedAddress(intent.payer_address), bond.id),
         env.DB.prepare('UPDATE payment_intents SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL').bind(now, intent.id),
         env.DB.prepare(`INSERT INTO bond_events (id, bond_id, event_type, from_status, to_status, metadata, created_at)
           VALUES (?, ?, 'PAYMENT_VERIFIED', ?, 'SECURED', ?, ?)`)
@@ -236,6 +371,38 @@ async function route(request: Request, env: Env): Promise<Response> {
       return fail(request, env, 409, 'PAYMENT_ALREADY_ASSIGNED', 'This transaction has already been assigned.')
     }
     return json(request, env, { status: 'SECURED', txHash: tx.hash.toLowerCase(), verified: true })
+  }
+
+  const createPassToken = path.match(/^\/api\/v1\/p\/([a-zA-Z0-9-]+)\/pass-tokens$/)
+  if (request.method === 'POST' && createPassToken) {
+    const profile = await authenticatedProfile(request, env)
+    if (!profile) return fail(request, env, 401, 'AUTH_REQUIRED', 'Register your guest wallet to create a pass.')
+    const bond = await getBond(env, createPassToken[1])
+    if (!bond) return fail(request, env, 404, 'BOND_NOT_FOUND', 'Reservation bond not found.')
+    const holder = normalizedAddress(bond.holder_address || bond.payer_address || '')
+    if (bond.status !== 'SECURED' || normalizedAddress(profile.wallet_address) !== holder) return fail(request, env, 403, 'PASS_NOT_AVAILABLE', 'This wallet does not hold the active reservation pass.')
+    const token = randomToken()
+    const shortCode = randomToken(5).toUpperCase()
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString()
+    await env.DB.prepare(`INSERT INTO pass_tokens (id, bond_id, token_hash, short_code, pass_version, expires_at, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`).bind(crypto.randomUUID(), bond.id, await sha256Hex(token), shortCode, bond.pass_version, expiresAt, new Date().toISOString()).run()
+    return json(request, env, { token, shortCode, expiresAt, passVersion: bond.pass_version }, 201)
+  }
+
+  if (request.method === 'GET' && path === '/api/v1/passes/validate') {
+    const token = url.searchParams.get('token')
+    const code = url.searchParams.get('code')?.toUpperCase()
+    if ((!token || !/^[0-9a-f]{64}$/i.test(token)) && (!code || !/^[0-9A-F]{10}$/.test(code))) return fail(request, env, 400, 'INVALID_PASS', 'Enter a valid pass code.')
+    const tokenHash = token ? await sha256Hex(token) : null
+    const pass = await env.DB.prepare(`SELECT pass_tokens.*, bonds.public_id, bonds.restaurant_name, bonds.amount_luna,
+      bonds.status, bonds.pass_version AS active_version, bonds.holder_address
+      FROM pass_tokens JOIN bonds ON bonds.id = pass_tokens.bond_id
+      WHERE ${tokenHash ? 'pass_tokens.token_hash = ?' : 'pass_tokens.short_code = ?'}`)
+      .bind(tokenHash || code).first<Record<string, string | number>>()
+    if (!pass || String(pass.expires_at) <= new Date().toISOString()) return fail(request, env, 404, 'PASS_EXPIRED', 'This pass is invalid or expired.')
+    if (pass.status !== 'SECURED' || pass.pass_version !== pass.active_version) return fail(request, env, 409, 'PASS_REPLACED', 'This pass has been replaced or is no longer active.')
+    const holder = String(pass.holder_address || '')
+    return json(request, env, { valid: true, publicId: pass.public_id, restaurant: pass.restaurant_name, amountLuna: pass.amount_luna, status: pass.status, holder: holder ? `${holder.slice(0, 9)}…${holder.slice(-5)}` : null, expiresAt: pass.expires_at })
   }
 
   return fail(request, env, 404, 'NOT_FOUND', 'Endpoint not found.')
