@@ -7,7 +7,7 @@ import {
   QrCode, ShieldCheck, Sparkle, UserCircle, Wallet, X,
 } from '@phosphor-icons/react'
 import { connectNimiq, ensureNimiqReady, payBond, signRegistration, walletErrorMessage } from './nimiq'
-import { createPassToken, createPaymentIntent, createRegistrationNonce, createRestaurantBond, getPublicBond, registerProfile, storedProfile, validatePass, verifyPayment, type PassToken, type PassValidation, type PaymentIntent, type Profile, type PublicBond, type Role } from './api'
+import { createPassToken, createPaymentIntent, createRefundIntent, createRegistrationNonce, createRestaurantBond, createTransferNonce, getAuditEvents, getPublicBond, getRestaurantBonds, registerProfile, storedProfile, submitTransfer, updateServiceStatus, validatePass, verifyPayment, verifyRefund, type AuditEvent, type PassToken, type PassValidation, type PaymentIntent, type Profile, type PublicBond, type RestaurantBond, type Role } from './api'
 
 const demo = {
   publicId: 'ca-8f47-aurea',
@@ -209,8 +209,28 @@ function SecuredPass({ txHash, publicId, bond }: { txHash: string; publicId: str
     <section className="pass-card"><div className="pass-card__top"><span>PACTUM / 01</span><b>{bond?.restaurant || demo.restaurant}</b></div><div className="pass-date"><strong>{bond?.reservationAt ? new Date(bond.reservationAt).getUTCDate() : '18'}</strong><div>RESERVATION<br/><b>{bond?.reservationAt ? new Date(bond.reservationAt).toLocaleString() : 'FRI · 8:00 PM'}</b></div></div><div className="pass-details"><span>PARTY<b>{bond?.partySize || demo.party} guests</b></span><span>BOND<b>{bond ? bond.amountLuna / 100_000 : demo.nim} NIM</b></span></div><div className="pass-code">{pass ? <QRCodeSVG value={scanUrl} size={164} level="M" marginSize={2}/> : <QrCode size={124} weight="thin"/>}<small>{pass ? pass.shortCode : 'WALLET-BOUND PASS'}</small>{pass && <em>Refreshes in 5 minutes for your safety</em>}</div></section>
     <div className="success-row"><CheckCircle weight="fill"/><span>Payment verified</span><code>{txHash ? `${txHash.slice(0, 10)}…${txHash.slice(-6)}` : 'Network confirmed'}</code></div>
     {error && <div className="error-message" role="alert">{error}</div>}
-    {profile?.role === 'GUEST' ? <button className="button button--app" onClick={revealPass}>{pass ? 'Refresh secure QR' : 'Reveal secure QR'} <ArrowRight weight="bold"/></button> : <Link className="button button--app" to="/start?role=guest&returnTo=pass">Create guest profile to reveal QR <ArrowRight weight="bold"/></Link>}<button className="secondary-action" onClick={() => navigator.clipboard.writeText(window.location.href)}><Copy/> Copy reservation link</button>
+    {profile?.role === 'GUEST' ? <><button className="button button--app" onClick={revealPass}>{pass ? 'Refresh secure QR' : 'Reveal secure QR'} <ArrowRight weight="bold"/></button><Link className="secondary-action" to={`/p/${publicId}/transfer`}><ArrowRight/> Transfer reservation</Link></> : <Link className="button button--app" to="/start?role=guest&returnTo=pass">Create guest profile to reveal QR <ArrowRight weight="bold"/></Link>}<button className="secondary-action" onClick={() => navigator.clipboard.writeText(window.location.href)}><Copy/> Copy reservation link</button>
   </div>
+}
+
+function TransferReservation() {
+  const { publicId = '' } = useParams()
+  const profile = storedProfile()
+  const [to, setTo] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [done, setDone] = useState(false)
+  const [error, setError] = useState('')
+  if (!profile || profile.role !== 'GUEST') return <Navigate to={`/start?role=guest&returnTo=pass`} replace/>
+  async function transfer() {
+    setBusy(true); setError('')
+    try {
+      const nonce = await createTransferNonce(publicId, to)
+      const signed = await signRegistration(nonce.message)
+      await submitTransfer(publicId, { nonceId: nonce.id, publicKey: signed.publicKey, signature: signed.signature })
+      setDone(true)
+    } catch (caught) { setError(walletErrorMessage(caught, 'The reservation could not be transferred.')) } finally { setBusy(false) }
+  }
+  return <div className="onboarding"><header><Mark/><Link to={`/p/${publicId}`}><X/></Link></header><main><p className="eyebrow">Signed transfer</p><h1>{done ? 'Reservation transferred.' : 'Pass the table on.'}</h1>{done ? <section className="created-bond"><CheckCircle weight="fill"/><h2>The old QR is now invalid.</h2><p>Share the reservation link with the new holder. They must register the recipient wallet to reveal the new pass.</p><Link className="button button--app" to={`/p/${publicId}`}>Return to reservation</Link></section> : <><p className="onboarding__lede">Transferring changes who may use the reservation. It does not move the original payment or create a refund.</p><div className="profile-form"><label>Recipient Nimiq address<input value={to} onChange={e => setTo(e.target.value.toUpperCase())} placeholder="NQ00 0000 …"/></label><div className="review-warning"><ShieldCheck/><p>Nimiq Pay will show the exact transfer statement before you sign it.</p></div><button className="button button--app" disabled={busy || to.length < 40} onClick={() => void transfer()}>{busy ? 'Confirm in Nimiq Pay…' : 'Sign transfer'} <ArrowRight/></button></div></>}{error && <div className="error-message">{error}</div>}</main></div>
 }
 
 function Start() {
@@ -262,8 +282,24 @@ function GuestHome() {
 
 function RestaurantHome() {
   const profile = storedProfile()
+  const [bonds, setBonds] = useState<RestaurantBond[]>([])
+  const [error, setError] = useState('')
+  const [busyBond, setBusyBond] = useState('')
+  useEffect(() => { if (profile?.role === 'RESTAURANT') getRestaurantBonds(profile.id).then(data => setBonds(data.bonds)).catch(caught => setError(caught instanceof Error ? caught.message : 'Could not load reservations.')) }, [profile?.id, profile?.role])
   if (!profile || profile.role !== 'RESTAURANT') return <Navigate to="/start?role=restaurant" replace/>
-  return <div className="workspace"><header><Mark/><span>{profile.displayName}</span></header><main><p className="eyebrow">Restaurant workspace</p><h1>Good evening,<br/>{profile.displayName}.</h1><div className="workspace-actions"><Link className="button button--app" to="/restaurant/new">Create reservation bond <ArrowRight/></Link><Link className="button workspace__secondary" to="/staff/scan"><QrCode/> Validate a guest pass</Link></div><section className="workspace-card"><span>UPCOMING</span><h2>Casa Aurea · Table for four</h2><p>Secured · {demo.nim} NIM bond</p></section></main></div>
+  async function refund(bond: RestaurantBond) {
+    if (!window.confirm(`Send ${(bond.amount_luna / 100000).toFixed(2)} NIM back to the original payer?`)) return
+    setBusyBond(bond.id); setError('')
+    try {
+      const intent = await createRefundIntent(bond.public_id)
+      const hash = await payBond({ recipient: intent.recipient, amountLuna: intent.amountLuna, dataReference: intent.dataReference })
+      let verified = false
+      for (const delay of [0, 1500, 3000, 5000]) { if (delay) await new Promise(resolve => setTimeout(resolve, delay)); verified = await verifyRefund(bond.public_id, intent.id, hash); if (verified) break }
+      if (!verified) throw new Error('Refund broadcast and still confirming. Do not send it again.')
+      setBonds(current => current.map(item => item.id === bond.id ? { ...item, service_status: 'REFUNDED' } : item))
+    } catch (caught) { setError(walletErrorMessage(caught, 'The refund was not completed.')) } finally { setBusyBond('') }
+  }
+  return <div className="workspace"><header><Mark/><span>{profile.displayName}</span></header><main><p className="eyebrow">Restaurant workspace</p><h1>Good evening,<br/>{profile.displayName}.</h1><div className="workspace-actions"><Link className="button button--app" to="/restaurant/new">Create reservation bond <ArrowRight/></Link><Link className="button workspace__secondary" to="/staff/scan"><QrCode/> Validate a guest pass</Link></div>{error && <div className="error-message">{error}</div>}<div className="bond-list">{bonds.length ? bonds.map(bond => <section className="workspace-card" key={bond.id}><span>{bond.service_status || bond.status}</span><h2>{new Date(bond.reservation_at).toLocaleString()} · {bond.party_size} guests</h2><p>{(bond.amount_luna / 100000).toFixed(2)} NIM bond</p><div className="bond-row-actions"><Link className="text-link bond-open" to={`/p/${bond.public_id}`}>Open reservation <ArrowRight/></Link>{bond.status === 'SECURED' && !bond.service_status && <button className="refund-link" disabled={busyBond === bond.id} onClick={() => void refund(bond)}>{busyBond === bond.id ? 'Confirming refund…' : 'Refund bond'}</button>}</div></section>) : <section className="workspace-card"><span>NO RESERVATIONS YET</span><h2>Create your first bond.</h2><p>Published reservation bonds will appear here automatically.</p></section>}</div></main></div>
 }
 
 function StaffScan() {
@@ -276,6 +312,8 @@ function StaffScan() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const scannerRef = useRef<QrScanner | null>(null)
   const validatingRef = useRef(false)
+  const [serviceStatus, setServiceStatus] = useState<'CHECKED_IN' | 'APPLIED' | null>(null)
+  const [events, setEvents] = useState<AuditEvent[]>([])
 
   async function check(input: { token?: string; code?: string }): Promise<boolean> {
     if (validatingRef.current) return false
@@ -327,6 +365,16 @@ function StaffScan() {
   }
 
   function stopCamera() { scannerRef.current?.stop(); setCameraState('idle') }
+  async function mutate(action: 'check-in' | 'apply') {
+    if (!result) return
+    setError('')
+    try {
+      const updated = await updateServiceStatus(result.publicId, action)
+      setServiceStatus(updated.serviceStatus)
+      setToast(result)
+      setEvents((await getAuditEvents(result.publicId)).events)
+    } catch (caught) { setError(caught instanceof Error ? caught.message : 'Reservation could not be updated.') }
+  }
   useEffect(() => {
     const scanner = scannerRef.current
     return () => scanner?.destroy()
@@ -338,7 +386,7 @@ function StaffScan() {
     return () => window.clearTimeout(timeout)
   }, [toast])
 
-  return <div className="app-shell"><header className="app-header"><Link to="/restaurant"><ArrowLeft/></Link><Mark/><span/></header><main className="scan-screen"><p className="eyebrow">Staff validation</p><h1>Validate a pass.</h1><div className={`scanner-frame scanner-frame--${cameraState}`}><video ref={videoRef} muted playsInline/><div className="scanner-guide"><span/><span/><span/><span/></div>{cameraState !== 'active' && <div className="scanner-placeholder">{cameraState === 'validating' ? <><span className="validation-pulse"><ShieldCheck weight="fill"/></span><p>Checking the current holder and pass version…</p></> : <><QrCode size={62}/><p>Point the rear camera at the guest’s live Pactum QR.</p><button className="button button--app" disabled={cameraState === 'starting'} onClick={() => void startCamera()}>{cameraState === 'starting' ? 'Opening camera…' : cameraState === 'denied' ? 'Retry camera' : 'Start QR scanner'}</button></>}</div>}{cameraState === 'active' && <><span className="scanner-live"><i/> Camera live</span><button className="scanner-stop" onClick={stopCamera}>Stop camera</button></>}</div><div className="manual-divider"><span>or use the code</span></div><form onSubmit={e => { e.preventDefault(); void check({ code }) }}><label>Manual pass code<input value={code} onChange={e => setCode(e.target.value.toUpperCase())} placeholder="A1B2C3D4E5" maxLength={10}/></label><button className="button button--app" disabled={code.length !== 10 || validatingRef.current}>Validate pass</button></form>{result && <div className="scan-result"><CheckCircle weight="fill"/><h2>Valid current pass</h2><p>{result.restaurant} · {(result.amountLuna / 100000).toFixed(2)} NIM</p><small>Holder {result.holder}</small></div>}{error && <div className="error-message scan-error">{error}</div>}</main>{toast && <div className="toast toast--success" role="status" aria-live="polite"><span className="toast__icon"><Check weight="bold"/></span><div><b>Reservation pass verified</b><p>{toast.restaurant} · Holder {toast.holder}</p></div><button onClick={() => setToast(null)} aria-label="Dismiss notification"><X/></button><i className="toast__timer"/></div>}</div>
+  return <div className="app-shell"><header className="app-header"><Link to="/restaurant"><ArrowLeft/></Link><Mark/><span/></header><main className="scan-screen"><p className="eyebrow">Staff validation</p><h1>Validate a pass.</h1><div className={`scanner-frame scanner-frame--${cameraState}`}><video ref={videoRef} muted playsInline/><div className="scanner-guide"><span/><span/><span/><span/></div>{cameraState !== 'active' && <div className="scanner-placeholder">{cameraState === 'validating' ? <><span className="validation-pulse"><ShieldCheck weight="fill"/></span><p>Checking the current holder and pass version…</p></> : <><QrCode size={62}/><p>Point the rear camera at the guest’s live Pactum QR.</p><button className="button button--app" disabled={cameraState === 'starting'} onClick={() => void startCamera()}>{cameraState === 'starting' ? 'Opening camera…' : cameraState === 'denied' ? 'Retry camera' : 'Start QR scanner'}</button></>}</div>}{cameraState === 'active' && <><span className="scanner-live"><i/> Camera live</span><button className="scanner-stop" onClick={stopCamera}>Stop camera</button></>}</div><div className="manual-divider"><span>or use the code</span></div><form onSubmit={e => { e.preventDefault(); void check({ code }) }}><label>Manual pass code<input value={code} onChange={e => setCode(e.target.value.toUpperCase())} placeholder="A1B2C3D4E5" maxLength={10}/></label><button className="button button--app" disabled={code.length !== 10 || validatingRef.current}>Validate pass</button></form>{result && <div className="scan-result"><CheckCircle weight="fill"/><h2>{serviceStatus === 'APPLIED' ? 'Bond applied to bill' : serviceStatus === 'CHECKED_IN' ? 'Guest checked in' : 'Valid current pass'}</h2><p>{result.restaurant} · {(result.amountLuna / 100000).toFixed(2)} NIM</p><small>Holder {result.holder}</small><div className="staff-actions">{!serviceStatus && <button className="button button--app" onClick={() => void mutate('check-in')}>Check in guest</button>}{serviceStatus === 'CHECKED_IN' && <button className="button button--app" onClick={() => void mutate('apply')}>Apply bond to bill</button>}</div></div>}{events.length > 0 && <div className="audit-list">{events.map((event, index) => <div key={`${event.created_at}-${index}`}><CheckCircle/><span><b>{event.event_type.replaceAll('_', ' ')}</b><small>{new Date(event.created_at).toLocaleString()}</small></span></div>)}</div>}{error && <div className="error-message scan-error">{error}</div>}</main>{toast && <div className="toast toast--success" role="status" aria-live="polite"><span className="toast__icon"><Check weight="bold"/></span><div><b>{serviceStatus === 'APPLIED' ? 'Bond applied successfully' : serviceStatus === 'CHECKED_IN' ? 'Guest checked in' : 'Reservation pass verified'}</b><p>{toast.restaurant} · Holder {toast.holder}</p></div><button onClick={() => setToast(null)} aria-label="Dismiss notification"><X/></button><i className="toast__timer"/></div>}</div>
 }
 
 function Privacy() {
@@ -387,7 +435,7 @@ function NewBond() {
 
 function App() {
   useEffect(() => { window.scrollTo(0, 0) }, [])
-  return <Routes><Route path="/" element={<Landing/>}/><Route path="/start" element={<Start/>}/><Route path="/guest" element={<GuestHome/>}/><Route path="/restaurant" element={<RestaurantHome/>}/><Route path="/restaurant/new" element={<NewBond/>}/><Route path="/staff/scan" element={<StaffScan/>}/><Route path="/p/:publicId" element={<MiniApp/>}/><Route path="/privacy" element={<Privacy/>}/><Route path="*" element={<Navigate to="/" replace/>}/></Routes>
+  return <Routes><Route path="/" element={<Landing/>}/><Route path="/start" element={<Start/>}/><Route path="/guest" element={<GuestHome/>}/><Route path="/restaurant" element={<RestaurantHome/>}/><Route path="/restaurant/new" element={<NewBond/>}/><Route path="/staff/scan" element={<StaffScan/>}/><Route path="/p/:publicId" element={<MiniApp/>}/><Route path="/p/:publicId/transfer" element={<TransferReservation/>}/><Route path="/privacy" element={<Privacy/>}/><Route path="*" element={<Navigate to="/" replace/>}/></Routes>
 }
 
 export default App

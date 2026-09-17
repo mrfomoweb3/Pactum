@@ -21,6 +21,7 @@ export type PublicBond = {
   partySize: number | null
   policyText: string | null
   cancellationDeadline: string | null
+  serviceStatus: 'CHECKED_IN' | 'APPLIED' | 'REFUND_PENDING' | 'REFUNDED' | null
 }
 
 export type Role = 'GUEST' | 'RESTAURANT'
@@ -35,6 +36,8 @@ export type Profile = {
 export type RegistrationNonce = { id: string; message: string; expiresAt: string }
 export type PassToken = { token: string; shortCode: string; expiresAt: string; passVersion: number }
 export type PassValidation = { valid: true; publicId: string; restaurant: string; amountLuna: number; status: string; holder: string | null; expiresAt: string }
+export type RestaurantBond = { id: string; public_id: string; reservation_at: string; party_size: number; amount_luna: number; status: string; service_status?: string | null }
+export type AuditEvent = { event_type: string; from_status: string | null; to_status: string | null; metadata: string; created_at: string }
 
 type ApiError = { error?: { code?: string; message?: string } }
 
@@ -113,4 +116,36 @@ export function createRestaurantBond(restaurantId: string, input: CreateBondInpu
     headers: { ...authHeaders(), 'content-type': 'application/json', 'idempotency-key': crypto.randomUUID() },
     body: JSON.stringify(input),
   })
+}
+
+export function getRestaurantBonds(restaurantId: string): Promise<{ bonds: RestaurantBond[] }> {
+  return api(`/restaurants/${restaurantId}/bonds`, { method: 'GET', headers: authHeaders() })
+}
+
+export function updateServiceStatus(publicId: string, action: 'check-in' | 'apply'): Promise<{ publicId: string; serviceStatus: 'CHECKED_IN' | 'APPLIED' }> {
+  return api(`/staff/bonds/${publicId}/${action}`, { method: 'POST', headers: { ...authHeaders(), 'idempotency-key': crypto.randomUUID() } })
+}
+
+export function getAuditEvents(publicId: string): Promise<{ events: AuditEvent[] }> {
+  return api(`/staff/bonds/${publicId}/events`, { method: 'GET', headers: authHeaders() })
+}
+
+export function createTransferNonce(publicId: string, toAddress: string): Promise<RegistrationNonce> {
+  return api(`/p/${publicId}/transfer-nonce`, { method: 'POST', headers: { ...authHeaders(), 'content-type': 'application/json' }, body: JSON.stringify({ toAddress }) })
+}
+
+export function submitTransfer(publicId: string, input: { nonceId: string; publicKey: string; signature: string }): Promise<{ holderAddress: string; passVersion: number }> {
+  return api(`/p/${publicId}/transfers`, { method: 'POST', headers: { ...authHeaders(), 'content-type': 'application/json', 'idempotency-key': crypto.randomUUID() }, body: JSON.stringify(input) })
+}
+
+export function createRefundIntent(publicId: string): Promise<PaymentIntent> {
+  return api(`/staff/bonds/${publicId}/refund-intents`, { method: 'POST', headers: { ...authHeaders(), 'idempotency-key': crypto.randomUUID() } })
+}
+
+export async function verifyRefund(publicId: string, intentId: string, txHash: string): Promise<boolean> {
+  const response = await fetch(`${API_URL}/staff/bonds/${publicId}/refunds/verify`, { method: 'POST', headers: { ...authHeaders(), 'content-type': 'application/json' }, body: JSON.stringify({ intentId, txHash }) })
+  const payload = await response.json() as { serviceStatus?: string; error?: { message?: string } }
+  if (response.status === 202) return false
+  if (!response.ok) throw new Error(payload.error?.message || 'Refund verification failed.')
+  return payload.serviceStatus === 'REFUNDED'
 }
