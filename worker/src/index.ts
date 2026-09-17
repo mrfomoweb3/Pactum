@@ -555,18 +555,24 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (!body.intentId || !body.txHash || !HASH_RE.test(body.txHash)) return fail(request, env, 400, 'INVALID_REFUND_PROOF', 'A valid refund intent and transaction hash are required.')
     const intent = await env.DB.prepare('SELECT * FROM refund_intents WHERE id = ? AND bond_id = ?').bind(body.intentId, bond.id).first<{ id: string; bond_id: string; sender_address: string; recipient_address: string; amount_luna: number; data_reference: string; network_id: number; expires_at: string; consumed_at: string | null; created_at: string }>()
     if (!intent || intent.consumed_at) return fail(request, env, 409, 'REFUND_INTENT_INVALID', 'This refund request is invalid or already used.')
+    const latestValidTime = Date.parse(intent.expires_at) + 2 * 60 * 1000
+    if (!Number.isFinite(latestValidTime) || Date.now() > latestValidTime) return fail(request, env, 409, 'REFUND_INTENT_EXPIRED', 'This refund request expired. Create a new refund request before sending funds.')
+    if (bond.status !== 'SECURED' || (bond.service_status !== null && bond.service_status !== 'CHECKED_IN') || bond.refund_tx_hash) return fail(request, env, 409, 'BOND_NOT_REFUNDABLE', 'This bond cannot be refunded from its current state.')
     let tx: NimiqTransaction
     try { tx = await rpc<NimiqTransaction>(env, 'getTransactionByHash', [body.txHash.toLowerCase()]) } catch { return fail(request, env, 202, 'REFUND_CONFIRMING', 'Refund detected and still confirming.') }
     const failures = verifyTransaction(tx, { ...intent, payer_address: intent.sender_address })
     if (failures.length) return fail(request, env, 422, 'REFUND_MISMATCH', 'The transaction does not match the authorized refund.')
     const now = new Date().toISOString()
-    await env.DB.batch([
-      env.DB.prepare("UPDATE bonds SET service_status = 'REFUNDED', refund_tx_hash = ?, pass_version = pass_version + 1, updated_at = ? WHERE id = ? AND service_status IS NOT 'APPLIED'").bind(tx.hash.toLowerCase(), now, bond.id),
+    const refundHash = tx.hash.toLowerCase()
+    const results = await env.DB.batch([
+      env.DB.prepare("UPDATE bonds SET service_status = 'REFUNDED', refund_tx_hash = ?, pass_version = pass_version + 1, updated_at = ? WHERE id = ? AND status = 'SECURED' AND refund_tx_hash IS NULL AND (service_status IS NULL OR service_status = 'CHECKED_IN')").bind(refundHash, now, bond.id),
       env.DB.prepare('UPDATE refund_intents SET consumed_at = ? WHERE id = ?').bind(now, intent.id),
-      env.DB.prepare(`INSERT INTO bond_events (id, bond_id, event_type, from_status, to_status, metadata, created_at) VALUES (?, ?, 'REFUNDED', ?, 'REFUNDED', ?, ?)`)
-        .bind(crypto.randomUUID(), bond.id, bond.service_status || 'SECURED', JSON.stringify({ txHash: tx.hash.toLowerCase(), recipient: intent.recipient_address }), now),
+      env.DB.prepare(`INSERT INTO bond_events (id, bond_id, event_type, from_status, to_status, metadata, created_at)
+        SELECT ?, id, 'REFUNDED', ?, 'REFUNDED', ?, ? FROM bonds WHERE id = ? AND refund_tx_hash = ?`)
+        .bind(crypto.randomUUID(), bond.service_status || 'SECURED', JSON.stringify({ txHash: refundHash, recipient: intent.recipient_address }), now, bond.id, refundHash),
     ])
-    return json(request, env, { publicId: bond.public_id, serviceStatus: 'REFUNDED', txHash: tx.hash.toLowerCase() })
+    if (!results[0].meta.changes) return fail(request, env, 409, 'CONCURRENT_UPDATE', 'The reservation changed before this refund completed.')
+    return json(request, env, { publicId: bond.public_id, serviceStatus: 'REFUNDED', txHash: refundHash })
   }
 
   return fail(request, env, 404, 'NOT_FOUND', 'Endpoint not found.')
