@@ -271,21 +271,26 @@ function StaffScan() {
   const [code, setCode] = useState('')
   const [result, setResult] = useState<PassValidation | null>(null)
   const [error, setError] = useState('')
-  const [cameraState, setCameraState] = useState<'idle' | 'starting' | 'active' | 'denied'>('idle')
+  const [toast, setToast] = useState<PassValidation | null>(null)
+  const [cameraState, setCameraState] = useState<'idle' | 'starting' | 'active' | 'validating' | 'denied'>('idle')
   const videoRef = useRef<HTMLVideoElement>(null)
   const scannerRef = useRef<QrScanner | null>(null)
   const validatingRef = useRef(false)
 
-  async function check(input: { token?: string; code?: string }) {
-    if (validatingRef.current) return
+  async function check(input: { token?: string; code?: string }): Promise<boolean> {
+    if (validatingRef.current) return false
     validatingRef.current = true; setError(''); setResult(null)
     try {
       const validation = await validatePass(input)
       setResult(validation)
+      setToast(validation)
+      if ('vibrate' in navigator) navigator.vibrate(45)
       scannerRef.current?.stop()
       setCameraState('idle')
+      return true
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Pass could not be validated.')
+      return false
     } finally { validatingRef.current = false }
   }
 
@@ -294,7 +299,10 @@ function StaffScan() {
       const scanned = new URL(data, window.location.origin)
       const token = scanned.searchParams.get('token')
       if (!token || !/^[0-9a-f]{64}$/i.test(token)) throw new Error('This is not a valid Pactum reservation QR code.')
-      await check({ token })
+      scannerRef.current?.stop()
+      setCameraState('validating')
+      const valid = await check({ token })
+      if (!valid) setCameraState('idle')
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'This QR code is not a Pactum pass.')
     }
@@ -324,8 +332,13 @@ function StaffScan() {
     return () => scanner?.destroy()
   }, [])
   useEffect(() => { const token = search.get('token'); if (token) void check({ token }) }, [search])
+  useEffect(() => {
+    if (!toast) return
+    const timeout = window.setTimeout(() => setToast(null), 4200)
+    return () => window.clearTimeout(timeout)
+  }, [toast])
 
-  return <div className="app-shell"><header className="app-header"><Link to="/restaurant"><ArrowLeft/></Link><Mark/><span/></header><main className="scan-screen"><p className="eyebrow">Staff validation</p><h1>Validate a pass.</h1><div className={`scanner-frame scanner-frame--${cameraState}`}><video ref={videoRef} muted playsInline/><div className="scanner-guide"><span/><span/><span/><span/></div>{cameraState !== 'active' && <div className="scanner-placeholder"><QrCode size={62}/><p>Point the rear camera at the guest’s live Pactum QR.</p><button className="button button--app" disabled={cameraState === 'starting'} onClick={() => void startCamera()}>{cameraState === 'starting' ? 'Opening camera…' : cameraState === 'denied' ? 'Retry camera' : 'Start QR scanner'}</button></div>}{cameraState === 'active' && <button className="scanner-stop" onClick={stopCamera}>Stop camera</button>}</div><div className="manual-divider"><span>or use the code</span></div><form onSubmit={e => { e.preventDefault(); void check({ code }) }}><label>Manual pass code<input value={code} onChange={e => setCode(e.target.value.toUpperCase())} placeholder="A1B2C3D4E5" maxLength={10}/></label><button className="button button--app" disabled={code.length !== 10}>Validate pass</button></form>{result && <div className="scan-result"><CheckCircle weight="fill"/><h2>Valid current pass</h2><p>{result.restaurant} · {(result.amountLuna / 100000).toFixed(2)} NIM</p><small>Holder {result.holder}</small></div>}{error && <div className="error-message">{error}</div>}</main></div>
+  return <div className="app-shell"><header className="app-header"><Link to="/restaurant"><ArrowLeft/></Link><Mark/><span/></header><main className="scan-screen"><p className="eyebrow">Staff validation</p><h1>Validate a pass.</h1><div className={`scanner-frame scanner-frame--${cameraState}`}><video ref={videoRef} muted playsInline/><div className="scanner-guide"><span/><span/><span/><span/></div>{cameraState !== 'active' && <div className="scanner-placeholder">{cameraState === 'validating' ? <><span className="validation-pulse"><ShieldCheck weight="fill"/></span><p>Checking the current holder and pass version…</p></> : <><QrCode size={62}/><p>Point the rear camera at the guest’s live Pactum QR.</p><button className="button button--app" disabled={cameraState === 'starting'} onClick={() => void startCamera()}>{cameraState === 'starting' ? 'Opening camera…' : cameraState === 'denied' ? 'Retry camera' : 'Start QR scanner'}</button></>}</div>}{cameraState === 'active' && <><span className="scanner-live"><i/> Camera live</span><button className="scanner-stop" onClick={stopCamera}>Stop camera</button></>}</div><div className="manual-divider"><span>or use the code</span></div><form onSubmit={e => { e.preventDefault(); void check({ code }) }}><label>Manual pass code<input value={code} onChange={e => setCode(e.target.value.toUpperCase())} placeholder="A1B2C3D4E5" maxLength={10}/></label><button className="button button--app" disabled={code.length !== 10 || validatingRef.current}>Validate pass</button></form>{result && <div className="scan-result"><CheckCircle weight="fill"/><h2>Valid current pass</h2><p>{result.restaurant} · {(result.amountLuna / 100000).toFixed(2)} NIM</p><small>Holder {result.holder}</small></div>}{error && <div className="error-message scan-error">{error}</div>}</main>{toast && <div className="toast toast--success" role="status" aria-live="polite"><span className="toast__icon"><Check weight="bold"/></span><div><b>Reservation pass verified</b><p>{toast.restaurant} · Holder {toast.holder}</p></div><button onClick={() => setToast(null)} aria-label="Dismiss notification"><X/></button><i className="toast__timer"/></div>}</div>
 }
 
 function Privacy() {
